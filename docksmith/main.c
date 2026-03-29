@@ -281,16 +281,18 @@ int main(int argc, char *argv[]) {
                 
                 printf("   Creating directories\n");
                 fflush(stdout);
-                system("mkdir -p temp_fs/bin temp_fs/lib64 2>&1");
+                system("mkdir -p temp_fs/bin temp_fs/lib temp_fs/lib64 2>&1");
                 
                 printf("   Copying sh binary\n");
                 fflush(stdout);
                 system("cp /bin/sh temp_fs/bin/ 2>&1");
                 
-                printf("   Copying libraries\n");
+                printf("   Copying libraries (aarch64)\n");
                 fflush(stdout);
-                system("cp /lib64/libc.so.6 temp_fs/lib64/ 2>&1");
-                system("cp /lib64/ld-linux-aarch64.so.1 temp_fs/lib64/ 2>&1");
+                // Try multiple locations for aarch64
+                system("cp /lib/aarch64-linux-gnu/libc.so.6 temp_fs/lib/ 2>/dev/null || cp /lib64/libc.so.6 temp_fs/lib64/ 2>/dev/null || true");
+                system("cp /lib/aarch64-linux-gnu/ld-linux-aarch64.so.1 temp_fs/lib/ 2>/dev/null || cp /lib64/ld-linux-aarch64.so.1 temp_fs/lib64/ 2>/dev/null || true");
+                system("cp /lib/aarch64-linux-gnu/libm.so.6 temp_fs/lib/ 2>/dev/null || cp /lib64/libm.so.6 temp_fs/lib64/ 2>/dev/null || true");
                 
                 printf("📦 Temp filesystem initialized\n");
                 fflush(stdout);
