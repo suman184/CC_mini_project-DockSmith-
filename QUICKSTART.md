@@ -59,8 +59,10 @@ CMD ["echo", "Application ready"]
 
 ```bash
 cd docksmith
-sudo ./docksmith build
+sudo -E ./docksmith build
 ```
+
+**Note**: Use `sudo -E` to preserve environment variables (needed to access `~/.docksmith/`)
 
 **Expected Output:**
 ```
@@ -158,7 +160,7 @@ RUN echo "Hello Container" > /output/file.txt
 
 **Run on Linux:**
 ```bash
-sudo ./docksmith build
+sudo -E ./docksmith build
 ```
 
 **You'll see:**
@@ -187,7 +189,7 @@ RUN pwd >> /identity.txt
 
 **Run:**
 ```bash
-sudo ./docksmith build
+sudo -E ./docksmith build
 cat docksmith/temp_fs/identity.txt
 ```
 

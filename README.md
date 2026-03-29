@@ -222,8 +222,8 @@ RUN mkdir -p /app && echo "Container file" > /app/test.txt
 RUN cat /app/test.txt
 EOF
 
-# Build (may need sudo for chroot)
-sudo ./docksmith build
+# Build (use sudo -E to preserve environment variables)
+sudo -E ./docksmith build
 
 # Output should show:
 # ✅ Temp filesystem initialized
@@ -510,6 +510,7 @@ Store in ~/.docksmith/layers/
 - temp_fs is created/reset with every build
 - Metadata stored in user's home directory (~/.docksmith/)
 - **macOS users**: Chroot has SIP restrictions - implementation is correct but won't execute inside chroot on macOS
+- **Linux users**: Use `sudo -E ./docksmith build` to preserve `$HOME` environment variable (needed to access ~/.docksmith/)
 
 ### Platform-Specific Setup
 
@@ -523,7 +524,7 @@ Store in ~/.docksmith/layers/
 **Linux:**
 - ✅ Full chroot() support
 - Works for production use
-- `sudo ./docksmith build` may be needed for chroot
+- `sudo -E ./docksmith build` (use `-E` to preserve environment variables)
 - Use standard `tar` and `sha256sum`
 - Deploy and test here for reliable results
 

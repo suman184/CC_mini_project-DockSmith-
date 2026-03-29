@@ -106,11 +106,11 @@ void create_layer(FileInfo *before, int beforeCount,
         return;
     }
 
-    // deterministic tar (requires gtar)
-    system("gtar --sort=name --mtime='UTC 1970-01-01' -cf layer.tar -C temp_fs -T filelist.txt");
+    // deterministic tar (use gtar on macOS, tar on Linux)
+    system("tar --sort=name --mtime='UTC 1970-01-01' -cf layer.tar -C temp_fs -T filelist.txt 2>/dev/null || gtar --sort=name --mtime='UTC 1970-01-01' -cf layer.tar -C temp_fs -T filelist.txt");
 
-    // hash
-    system("shasum -a 256 layer.tar > hash.txt");
+    // hash (use sha256sum on Linux, shasum on macOS)
+    system("sha256sum layer.tar > hash.txt 2>/dev/null || shasum -a 256 layer.tar > hash.txt");
 
     FILE *h = fopen("hash.txt", "r");
     char hash[100];
