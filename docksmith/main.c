@@ -46,6 +46,13 @@ int take_snapshot(const char *base, FileInfo files[], int *count) {
         if (strcmp(entry->d_name, ".") == 0 || strcmp(entry->d_name, "..") == 0)
             continue;
 
+        // Safety check to prevent array overflow (arrays sized 20000)
+        if (*count >= 19999) {
+            fprintf(stderr, "⚠️  Warning: Too many files to snapshot (limit: 19999, found: %d+)\n", *count);
+            closedir(dir);
+            return -1;
+        }
+
         char fullPath[512];
         sprintf(fullPath, "%s/%s", base, entry->d_name);
 
@@ -267,21 +274,17 @@ int main(int argc, char *argv[]) {
                 system("rm -rf temp_fs");
                 system("mkdir -p temp_fs");
                 
-                // Copy minimal runtime using rsync (handles symlinks and permissions better)
-                char cpBinCmd[1024];
-                sprintf(cpBinCmd, "rsync -a /bin %s/temp_fs/ 2>/dev/null || true", cwd);
-                printf("🔧 Copying /bin...\n");
-                system(cpBinCmd);
+                // Copy minimal runtime - only /usr/bin and /usr/lib needed for /bin/sh
+                char cpUsrBinCmd[1024];
+                sprintf(cpUsrBinCmd, "rsync -a /usr/bin %s/temp_fs/usr-bin/ 2>/dev/null; rsync -a /usr/lib* %s/temp_fs/ 2>/dev/null", cwd, cwd);
+                printf("🔧 Copying /usr/bin and /usr/lib...\n");
+                system("mkdir -p temp_fs/usr/bin temp_fs/usr/lib");
+                system("cp /usr/bin/sh temp_fs/usr/bin/ 2>/dev/null");
+                system("cp -rL /usr/lib* temp_fs/usr/ 2>/dev/null || true");
                 
-                char cpLibCmd[1024];
-                sprintf(cpLibCmd, "rsync -a /lib %s/temp_fs/ 2>/dev/null || true", cwd);
-                printf("🔧 Copying /lib...\n");
-                system(cpLibCmd);
-                
-                char cpUsrCmd[1024];
-                sprintf(cpUsrCmd, "rsync -a /usr %s/temp_fs/ 2>/dev/null || true", cwd);
-                printf("🔧 Copying /usr...\n");
-                system(cpUsrCmd);
+                // Create /bin symlink pointing to /usr/bin for compatibility
+                system("mkdir -p temp_fs/bin temp_fs/lib");
+                system("cd temp_fs && ln -sf usr/bin bin && ln -sf usr/lib lib 2>/dev/null || true");
                 
                 // Verify /bin/sh exists in container
                 char shPath[1024];
@@ -289,8 +292,8 @@ int main(int argc, char *argv[]) {
                 FILE *test = fopen(shPath, "r");
                 if (!test) {
                     printf("❌ ERROR: %s not found\n", shPath);
-                    printf("   Listing temp_fs/bin contents:\n");
-                    system("ls -la temp_fs/bin/ 2>&1 | head -20");
+                    printf("   Listing temp_fs contents:\n");
+                    system("ls -la temp_fs/ 2>&1");
                     return 1;
                 }
                 fclose(test);
@@ -302,7 +305,7 @@ int main(int argc, char *argv[]) {
             else if (strcmp(command, "COPY") == 0) {
                 printf("-> Handling COPY\n");
 
-                FileInfo before[5000], after[5000];
+                FileInfo before[20000], after[20000];
                 int beforeCount = 0, afterCount = 0;
 
                 take_snapshot(TEMP_FS, before, &beforeCount);
@@ -332,7 +335,7 @@ int main(int argc, char *argv[]) {
             else if (strcmp(command, "RUN") == 0) {
                 printf("-> Handling RUN\n");
 
-                FileInfo before[5000], after[5000];
+                FileInfo before[20000], after[20000];
                 int beforeCount = 0, afterCount = 0;
 
                 take_snapshot(TEMP_FS, before, &beforeCount);
