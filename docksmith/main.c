@@ -36,7 +36,7 @@ long layerSizes[100];
 char layerCreatedBy[100][200];
 int layerCount = 0;
 
-// SNAPSHOT
+// SNAPSHOT - Skip system directories to avoid huge file lists
 int take_snapshot(const char *base, FileInfo files[], int *count) {
     DIR *dir = opendir(base);
     if (!dir) return -1;
@@ -45,6 +45,12 @@ int take_snapshot(const char *base, FileInfo files[], int *count) {
     while ((entry = readdir(dir)) != NULL) {
         if (strcmp(entry->d_name, ".") == 0 || strcmp(entry->d_name, "..") == 0)
             continue;
+        
+        // Skip system directories to keep snapshot size manageable
+        if (strcmp(entry->d_name, "bin") == 0 || strcmp(entry->d_name, "lib") == 0 ||
+            strcmp(entry->d_name, "lib64") == 0 || strcmp(entry->d_name, "usr") == 0) {
+            continue;
+        }
 
         // Safety check to prevent array overflow (arrays sized 20000)
         if (*count >= 19999) {
