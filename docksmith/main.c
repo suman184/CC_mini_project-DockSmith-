@@ -263,6 +263,11 @@ int main(int argc, char *argv[]) {
 
                 system("rm -rf temp_fs");
                 system("mkdir -p temp_fs");
+                
+                // Setup /bin/sh for RUN command isolation
+                system("mkdir -p temp_fs/bin");
+                system("sudo cp /bin/sh temp_fs/bin/ 2>/dev/null");
+                
                 printf("📦 Temp filesystem initialized\n");
             }
 
