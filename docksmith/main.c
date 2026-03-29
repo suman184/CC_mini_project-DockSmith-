@@ -252,6 +252,7 @@ int main(int argc, char *argv[]) {
             // FROM
             if (strcmp(command, "FROM") == 0) {
                 printf("-> Handling FROM\n");
+                fflush(stdout);
 
                 char imageName[100];
                 sscanf(args, "%s", imageName);
@@ -266,25 +267,32 @@ int main(int argc, char *argv[]) {
                 }
 
                 printf("✅ Loaded base image: %s\n", imageName);
+                fflush(stdout);
 
                 strcpy(currentImage.name, imageName);
                 strcpy(currentImage.workingDir, "/");
 
                 fclose(img);
 
-                system("rm -rf temp_fs");
-                system("mkdir -p temp_fs/usr/bin temp_fs/usr/lib64 temp_fs/bin temp_fs/lib64");
+                printf("   Cleaning up old temp_fs\n");
+                fflush(stdout);
+                system("rm -rf temp_fs 2>&1");
                 
-                printf("🔧 Copying minimal runtime...\n");
-                // Copy the sh binary
-                system("cp /bin/sh temp_fs/bin/ 2>/dev/null || cp /usr/bin/sh temp_fs/bin/ 2>/dev/null");
+                printf("   Creating directories\n");
+                fflush(stdout);
+                system("mkdir -p temp_fs/bin temp_fs/lib64 2>&1");
                 
-                // Copy essential libc and linker
-                system("cp /lib*/libc.so.6 temp_fs/lib/ 2>/dev/null || cp /lib64/libc.so.6 temp_fs/lib64/ 2>/dev/null || true");
-                system("cp /lib*/ld-*.so.* temp_fs/lib/ 2>/dev/null || cp /lib64/ld-*.so.* temp_fs/lib64/ 2>/dev/null || true");
-                system("cp /lib*/libm.so.6 temp_fs/lib/ 2>/dev/null || cp /lib64/libm.so.6 temp_fs/lib64/ 2>/dev/null || true");
+                printf("   Copying sh binary\n");
+                fflush(stdout);
+                system("cp /bin/sh temp_fs/bin/ 2>&1");
+                
+                printf("   Copying libraries\n");
+                fflush(stdout);
+                system("cp /lib64/libc.so.6 temp_fs/lib64/ 2>&1");
+                system("cp /lib64/ld-linux-aarch64.so.1 temp_fs/lib64/ 2>&1");
                 
                 printf("📦 Temp filesystem initialized\n");
+                fflush(stdout);
             }
 
             // COPY
