@@ -281,7 +281,7 @@ int main(int argc, char *argv[]) {
                 printf("   Return code: %d\n", ret2);
                 
                 // Verify /bin/sh exists in container
-                char shPath[512];
+                char shPath[1024];
                 sprintf(shPath, "%s/temp_fs/bin/sh", cwd);
                 FILE *test = fopen(shPath, "r");
                 if (!test) {
