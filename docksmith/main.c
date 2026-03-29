@@ -267,22 +267,16 @@ int main(int argc, char *argv[]) {
                 fclose(img);
 
                 system("rm -rf temp_fs");
-                system("mkdir -p temp_fs/usr/bin temp_fs/usr/lib temp_fs/bin temp_fs/lib");
+                system("mkdir -p temp_fs/usr/bin temp_fs/usr/lib64 temp_fs/bin temp_fs/lib64");
                 
-                printf("🔧 Copying minimal runtime (/usr/bin, /usr/lib)...\n");
-                system("cp /usr/bin/sh temp_fs/usr/bin/ 2>/dev/null");
-                system("cp -rL /usr/lib* temp_fs/usr/ 2>/dev/null || true");
+                printf("🔧 Copying minimal runtime...\n");
+                // Copy the sh binary
+                system("cp /bin/sh temp_fs/bin/ 2>/dev/null || cp /usr/bin/sh temp_fs/bin/ 2>/dev/null");
                 
-                // Create /bin and /lib symlinks to /usr/bin and /usr/lib
-                system("cd temp_fs && ln -sf usr/bin bin_real && ln -sf usr/lib lib_real 2>/dev/null; mv bin_real bin; mv lib_real lib 2>/dev/null || true");
-                
-                // Verify /bin/sh exists in container
-                if (access("temp_fs/bin/sh", F_OK) != 0) {
-                    printf("❌ ERROR: temp_fs/bin/sh not found\n");
-                    printf("   Listing temp_fs contents:\n");
-                    system("ls -laR temp_fs/ 2>&1 | head -30");
-                    return 1;
-                }
+                // Copy essential libc and linker
+                system("cp /lib*/libc.so.6 temp_fs/lib/ 2>/dev/null || cp /lib64/libc.so.6 temp_fs/lib64/ 2>/dev/null || true");
+                system("cp /lib*/ld-*.so.* temp_fs/lib/ 2>/dev/null || cp /lib64/ld-*.so.* temp_fs/lib64/ 2>/dev/null || true");
+                system("cp /lib*/libm.so.6 temp_fs/lib/ 2>/dev/null || cp /lib64/libm.so.6 temp_fs/lib64/ 2>/dev/null || true");
                 
                 printf("📦 Temp filesystem initialized\n");
             }
