@@ -266,37 +266,23 @@ int main(int argc, char *argv[]) {
 
                 fclose(img);
 
-                // Get current working directory
-                char cwd[512];
-                getcwd(cwd, sizeof(cwd));
-                printf("📂 Working directory: %s\n", cwd);
-
                 system("rm -rf temp_fs");
-                system("mkdir -p temp_fs");
+                system("mkdir -p temp_fs/usr/bin temp_fs/usr/lib temp_fs/bin temp_fs/lib");
                 
-                // Copy minimal runtime - only /usr/bin and /usr/lib needed for /bin/sh
-                char cpUsrBinCmd[1024];
-                sprintf(cpUsrBinCmd, "rsync -a /usr/bin %s/temp_fs/usr-bin/ 2>/dev/null; rsync -a /usr/lib* %s/temp_fs/ 2>/dev/null", cwd, cwd);
-                printf("🔧 Copying /usr/bin and /usr/lib...\n");
-                system("mkdir -p temp_fs/usr/bin temp_fs/usr/lib");
+                printf("🔧 Copying minimal runtime (/usr/bin, /usr/lib)...\n");
                 system("cp /usr/bin/sh temp_fs/usr/bin/ 2>/dev/null");
                 system("cp -rL /usr/lib* temp_fs/usr/ 2>/dev/null || true");
                 
-                // Create /bin symlink pointing to /usr/bin for compatibility
-                system("mkdir -p temp_fs/bin temp_fs/lib");
-                system("cd temp_fs && ln -sf usr/bin bin && ln -sf usr/lib lib 2>/dev/null || true");
+                // Create /bin and /lib symlinks to /usr/bin and /usr/lib
+                system("cd temp_fs && ln -sf usr/bin bin_real && ln -sf usr/lib lib_real 2>/dev/null; mv bin_real bin; mv lib_real lib 2>/dev/null || true");
                 
                 // Verify /bin/sh exists in container
-                char shPath[1024];
-                sprintf(shPath, "%s/temp_fs/bin/sh", cwd);
-                FILE *test = fopen(shPath, "r");
-                if (!test) {
-                    printf("❌ ERROR: %s not found\n", shPath);
+                if (access("temp_fs/bin/sh", F_OK) != 0) {
+                    printf("❌ ERROR: temp_fs/bin/sh not found\n");
                     printf("   Listing temp_fs contents:\n");
-                    system("ls -la temp_fs/ 2>&1");
+                    system("ls -laR temp_fs/ 2>&1 | head -30");
                     return 1;
                 }
-                fclose(test);
                 
                 printf("📦 Temp filesystem initialized\n");
             }
