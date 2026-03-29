@@ -265,12 +265,14 @@ int main(int argc, char *argv[]) {
                 system("mkdir -p temp_fs");
                 
                 // Setup /bin/sh for RUN command isolation
-                // Copy shell binary and required libraries
-                system("mkdir -p temp_fs/bin temp_fs/lib64");
+                // Copy shell binary and all required system libraries
+                system("mkdir -p temp_fs/bin");
                 system("cp /bin/sh temp_fs/bin/ 2>/dev/null || true");
-                system("cp /lib64/ld-linux-*.so.* temp_fs/lib64/ 2>/dev/null || true");
-                system("cp /lib64/libc.so.* temp_fs/lib64/ 2>/dev/null || true");
-                system("cp /lib64/libdl.so.* temp_fs/lib64/ 2>/dev/null || true");
+                
+                // Copy all lib directories (handles both /lib64 and /lib paths)
+                system("cp -r /lib64 temp_fs/ 2>/dev/null || true");
+                system("cp -r /lib temp_fs/ 2>/dev/null || true");
+                system("cp -r /usr/lib temp_fs/usr/ 2>/dev/null || mkdir -p temp_fs/usr 2>/dev/null || true");
                 
                 printf("📦 Temp filesystem initialized\n");
             }
