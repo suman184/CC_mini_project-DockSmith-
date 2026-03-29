@@ -265,16 +265,14 @@ int main(int argc, char *argv[]) {
                 system("mkdir -p temp_fs");
                 
                 // Setup /bin/sh for RUN command isolation
-                system("mkdir -p temp_fs/bin temp_fs/lib64 temp_fs/lib");
+                system("mkdir -p temp_fs/bin temp_fs/lib64 temp_fs/lib temp_fs/usr/lib");
                 system("cp /bin/sh temp_fs/bin/ 2>/dev/null || true");
                 
-                // Copy libc and linker with wildcards (works across distros)
-                system("cp /lib64/libc.so* temp_fs/lib64/ 2>/dev/null || true");
-                system("cp /lib64/ld-linux* temp_fs/lib64/ 2>/dev/null || true");
-                system("cp /lib64/libdl.so* temp_fs/lib64/ 2>/dev/null || true");
-                system("cp /lib/libc.so* temp_fs/lib/ 2>/dev/null || true");
-                system("cp /lib/ld-linux* temp_fs/lib/ 2>/dev/null || true");
-                system("cp /lib/libdl.so* temp_fs/lib/ 2>/dev/null || true");
+                // Use bash to properly expand wildcards and copy libc/linker
+                system("bash -c 'cp /lib64/libc.so* temp_fs/lib64/ 2>/dev/null || true'");
+                system("bash -c 'cp /lib64/ld-linux* temp_fs/lib64/ 2>/dev/null || true'");
+                system("bash -c 'cp /lib/libc.so* temp_fs/lib/ 2>/dev/null || true'");
+                system("bash -c 'cp /lib/ld-linux* temp_fs/lib/ 2>/dev/null || true'");
                 
                 printf("📦 Temp filesystem initialized\n");
             }
