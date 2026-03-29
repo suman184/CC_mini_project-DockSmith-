@@ -7,6 +7,8 @@
 #include <time.h>
 #include <sys/types.h>
 #include <sys/wait.h>
+#include <sys/types.h>
+#include <sys/wait.h>
 
 #define TEMP_FS "./temp_fs"
 
@@ -76,6 +78,63 @@ int file_changed(FileInfo *before, int beforeCount, FileInfo *f) {
         }
     }
     return 1;
+}
+
+// ISOLATED CONTAINER EXECUTION WITH CHROOT
+int run_in_container(const char *rootfs, char *cmd) {
+    pid_t pid = fork();
+    
+    if (pid < 0) {
+        perror("❌ fork() failed");
+        return -1;
+    }
+    
+    if (pid == 0) {
+        // CHILD PROCESS
+        char abs_rootfs[512];
+        if (rootfs[0] == '/') {
+            strcpy(abs_rootfs, rootfs);
+        } else {
+            getcwd(abs_rootfs, sizeof(abs_rootfs));
+            strcat(abs_rootfs, "/");
+            strcat(abs_rootfs, rootfs);
+        }
+        
+        if (chdir(abs_rootfs) < 0) {
+            perror("❌ chdir() to rootfs failed");
+            exit(1);
+        }
+        
+        if (chroot(".") < 0) {
+            perror("❌ chroot() failed");
+            exit(1);
+        }
+        
+        if (chdir("/") < 0) {
+            perror("❌ chdir() to / inside container failed");
+            exit(1);
+        }
+        
+        setenv("LD_LIBRARY_PATH", "/lib:/lib/aarch64-linux-gnu", 1);
+        
+        execl("/bin/sh", "sh", "-c", cmd, NULL);
+        
+        perror("❌ execl() failed");
+        exit(1);
+    } else {
+        // PARENT PROCESS - wait for child
+        int status;
+        waitpid(pid, &status, 0);
+        
+        if (WIFEXITED(status)) {
+            return WEXITSTATUS(status);
+        } else if (WIFSIGNALED(status)) {
+            fprintf(stderr, "❌ Child process terminated by signal %d\n", WTERMSIG(status));
+            return -1;
+        }
+        
+        return -1;
+    }
 }
 
 // CREATE LAYER
@@ -264,15 +323,9 @@ int main(int argc, char *argv[]) {
                 system("rm -rf temp_fs");
                 system("mkdir -p temp_fs");
                 
-                // Setup /bin/sh for RUN command isolation
-                system("mkdir -p temp_fs/bin temp_fs/lib64 temp_fs/lib temp_fs/usr/lib");
-                system("cp /bin/sh temp_fs/bin/ 2>/dev/null || true");
-                
-                // Use bash to properly expand wildcards and copy libc/linker
-                system("bash -c 'cp /lib64/libc.so* temp_fs/lib64/ 2>/dev/null || true'");
-                system("bash -c 'cp /lib64/ld-linux* temp_fs/lib64/ 2>/dev/null || true'");
-                system("bash -c 'cp /lib/libc.so* temp_fs/lib/ 2>/dev/null || true'");
-                system("bash -c 'cp /lib/ld-linux* temp_fs/lib/ 2>/dev/null || true'");
+                // Copy minimal runtime libraries for chroot isolation
+                system("cp -r /bin temp_fs/");
+                system("cp -r /lib temp_fs/");
                 
                 printf("📦 Temp filesystem initialized\n");
             }
