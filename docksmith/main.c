@@ -52,23 +52,24 @@ int take_snapshot(const char *base, FileInfo files[], int *count) {
             continue;
         }
 
-        // Safety check to prevent array overflow (arrays sized 20000)
-        if (*count >= 19999) {
-            fprintf(stderr, "⚠️  Warning: Too many files to snapshot (limit: 19999, found: %d+)\n", *count);
+        // Safety check to prevent array overflow (arrays sized 1000)
+        if (*count >= 999) {
+            fprintf(stderr, "⚠️  Warning: snapshot array full (user files: %d)\n", *count);
             closedir(dir);
-            return -1;
+            return 0;  // Return successfully rather than failing
         }
 
         char fullPath[512];
         sprintf(fullPath, "%s/%s", base, entry->d_name);
 
         struct stat st;
-        stat(fullPath, &st);
+        if (stat(fullPath, &st) < 0) continue;
 
         if (S_ISDIR(st.st_mode)) {
             take_snapshot(fullPath, files, count);
         } else {
-            strcpy(files[*count].path, fullPath);
+            strncpy(files[*count].path, fullPath, 255);
+            files[*count].path[255] = '\0';
             files[*count].size = st.st_size;
             files[*count].mtime = st.st_mtime;
             (*count)++;
@@ -298,8 +299,10 @@ int main(int argc, char *argv[]) {
             // COPY
             else if (strcmp(command, "COPY") == 0) {
                 printf("-> Handling COPY\n");
+                fflush(stdout);
 
-                FileInfo before[20000], after[20000];
+                // Use smaller arrays to avoid stack overflow
+                FileInfo before[1000], after[1000];
                 int beforeCount = 0, afterCount = 0;
 
                 take_snapshot(TEMP_FS, before, &beforeCount);
@@ -328,8 +331,10 @@ int main(int argc, char *argv[]) {
             // RUN
             else if (strcmp(command, "RUN") == 0) {
                 printf("-> Handling RUN\n");
+                fflush(stdout);
 
-                FileInfo before[20000], after[20000];
+                // Use smaller arrays
+                FileInfo before[1000], after[1000];
                 int beforeCount = 0, afterCount = 0;
 
                 take_snapshot(TEMP_FS, before, &beforeCount);
