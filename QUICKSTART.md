@@ -178,7 +178,46 @@ sudo -E ./docksmith build
 
 ---
 
-## 🧪 Example 3: Verify Isolation (Linux)
+## 🧪 Example 4: Build and Run (Linux)
+
+**Docksmithfile:**
+```dockerfile
+FROM base
+ENV APP_NAME=HelloApp
+WORKDIR /app
+COPY . /app
+CMD ["echo", "App is running!"]
+```
+
+**Build:**
+```bash
+sudo -E ./docksmith build
+```
+
+**Run with default CMD:**
+```bash
+sudo -E ./docksmith run base
+```
+
+**Output:**
+```
+App is running!
+```
+
+**Run with override:**
+```bash
+sudo -E ./docksmith run base "pwd && ls"
+```
+
+**Output:**
+```
+/app
+index.txt  main.py  README.md
+```
+
+✅ **Shows**: Environment variables set, working directory applied, custom commands work
+
+---
 
 **Docksmithfile:**
 ```dockerfile
@@ -210,7 +249,8 @@ After running `./docksmith build`:
 ```
 ~/.docksmith/
 ├── images/
-│   └── base.json              ← Your base image
+│   └── base.json              ← Your base image (initial)
+│   └── myapp.json             ← Built image manifest with layers & config
 └── layers/
     ├── a1b2c3d4e5f6....tar    ← Layer 1 (COPY)
     └── f6e5d4c3b2a1....tar    ← Layer 2 (RUN)
@@ -222,7 +262,29 @@ docksmith/
 │   ├── app/                   ← Files from COPY
 │   ├── output/                ← Created by RUN
 │   └── ...
+├── runtime_fs/                ← Container root during run (created on demand)
+│   ├── bin/, lib/, usr/       ← Extracted from layers
+│   ├── app/
+│   └── ...
 └── docksmith                  ← Binary
+```
+
+**Manifest format** (saved as `~/.docksmith/images/myapp.json`):
+```json
+{
+  "name": "myapp",
+  "layers": [
+    "a1b2c3d4e5f6...",
+    "f6e5d4c3b2a1..."
+  ],
+  "config": {
+    "Cmd": "echo hello",
+    "WorkingDir": "/app",
+    "Env": [
+      "APP_NAME=MyApp"
+    ]
+  }
+}
 ```
 
 ---
@@ -292,7 +354,45 @@ The build output shows:
 
 ---
 
-## 📊 What Each Instruction Does
+## � Run Container
+
+After building an image, run it with:
+
+### Basic Run (uses CMD from manifest)
+
+```bash
+sudo -E ./docksmith run base
+```
+
+### Run with Override Command
+
+```bash
+sudo -E ./docksmith run base "ls -la /app"
+```
+
+### Expected Output
+
+```
+🚀 Running container: base
+✅ Manifest loaded: 2 layers, 1 env vars
+📂 Creating runtime filesystem...
+📦 Extracting 2 layers...
+  Layer 1: 3e54231ac0a7de57721a50725f440e7a40ce5fd2fc79900a37e8298884781a3c
+  Layer 2: 866c5e7e4fb0e091f4fd8bd7391cd9be91997d76d44f9c23491abfa2b840e78e
+✅ All layers extracted
+🔧 Setting environment variables...
+  APP_NAME=MyApp
+📝 Default command: echo "Application ready"
+📍 Working dir: /app
+🏃 Executing...
+
+Application ready
+✅ Container exited with code: 0
+```
+
+---
+
+## �📊 What Each Instruction Does
 
 | Instruction | Behavior | Creates Layer? |
 |------------|----------|--------|
@@ -332,8 +432,11 @@ The build output shows:
 - [ ] Ran `./docksmith build`
 - [ ] Checked output for `✅` messages
 - [ ] Verified layers in `~/.docksmith/layers/`
+- [ ] Built image manifest saved to `~/.docksmith/images/`
+- [ ] Ran `sudo -E ./docksmith run <image>`
+- [ ] Container executed successfully with correct output
 
-If all checked ✅ - **You're running Docksmith!** 🎉
+If all checked ✅ - **You're running Docksmith end-to-end!** 🎉
 
 ---
 

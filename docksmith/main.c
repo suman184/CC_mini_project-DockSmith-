@@ -36,6 +36,16 @@ long layerSizes[100];
 char layerCreatedBy[100][200];
 int layerCount = 0;
 
+// Image manifest for run command
+typedef struct {
+    char layers[100][100];
+    int layerCount;
+    char cmd[200];
+    char env[10][200];
+    int envCount;
+    char workingDir[100];
+} ImageManifest;
+
 // SNAPSHOT - Skip system directories to avoid huge file lists
 int take_snapshot(const char *base, FileInfo files[], int *count) {
     DIR *dir = opendir(base);
@@ -218,6 +228,190 @@ void create_layer(FileInfo *before, int beforeCount,
     printf("📁 Stored at: ~/.docksmith/layers/%s.tar\n", hash);
 
     system("rm -f filelist.txt hash.txt");
+}
+
+// Container execution with working directory support
+int run_container_with_workdir(const char *rootfs, const char *cmd, const char *workingDir) {
+    pid_t pid = fork();
+    
+    if (pid < 0) {
+        perror("❌ fork() failed");
+        return -1;
+    }
+    
+    if (pid == 0) {
+        // CHILD PROCESS
+        char abs_rootfs[512];
+        if (rootfs[0] == '/') {
+            strcpy(abs_rootfs, rootfs);
+        } else {
+            getcwd(abs_rootfs, sizeof(abs_rootfs));
+            strcat(abs_rootfs, "/");
+            strcat(abs_rootfs, rootfs);
+        }
+        
+        if (chdir(abs_rootfs) < 0) {
+            perror("❌ chdir() to rootfs failed");
+            exit(1);
+        }
+        
+        if (chroot(".") < 0) {
+            perror("❌ chroot() failed");
+            exit(1);
+        }
+        
+        // Change to working directory inside container
+        if (workingDir && workingDir[0] != '\0') {
+            if (chdir(workingDir) < 0) {
+                perror("❌ chdir() to working directory failed");
+                exit(1);
+            }
+        } else {
+            if (chdir("/") < 0) {
+                perror("❌ chdir() to / failed");
+                exit(1);
+            }
+        }
+        
+        setenv("LD_LIBRARY_PATH", "/lib:/lib/aarch64-linux-gnu", 1);
+        
+        execl("/bin/sh", "sh", "-c", cmd, NULL);
+        
+        perror("❌ execl() failed");
+        exit(1);
+    } else {
+        // PARENT PROCESS
+        int status;
+        waitpid(pid, &status, 0);
+        
+        if (WIFEXITED(status)) {
+            return WEXITSTATUS(status);
+        } else if (WIFSIGNALED(status)) {
+            fprintf(stderr, "❌ Child process terminated by signal %d\n", WTERMSIG(status));
+            return -1;
+        }
+        
+        return -1;
+    }
+}
+
+// Load image manifest for run command
+int load_manifest(const char *imageName, ImageManifest *manifest) {
+    char path[512];
+    sprintf(path, "%s/.docksmith/images/%s.json", getenv("HOME"), imageName);
+    
+    FILE *fp = fopen(path, "r");
+    if (!fp) {
+        printf("❌ Image not found: %s\n", imageName);
+        return -1;
+    }
+    
+    // Initialize manifest
+    manifest->layerCount = 0;
+    manifest->envCount = 0;
+    strcpy(manifest->workingDir, "/");
+    strcpy(manifest->cmd, "");
+    
+    // Simple JSON parsing - scan for key-value pairs
+    char line[512];
+    while (fgets(line, sizeof(line), fp)) {
+        // Parse layers
+        if (strstr(line, "\"layers\"")) {
+            while (fgets(line, sizeof(line), fp)) {
+                if (strchr(line, '}')) break;
+                if (strstr(line, "sha256:") || (strstr(line, "\"") && !strstr(line, "layers"))) {
+                    char *start = strchr(line, '"');
+                    if (start) {
+                        start++;
+                        char *end = strchr(start, '"');
+                        if (end && start != end) {
+                            strncpy(manifest->layers[manifest->layerCount], start, end - start);
+                            manifest->layers[manifest->layerCount][end - start] = '\0';
+                            manifest->layerCount++;
+                        }
+                    }
+                }
+            }
+        }
+        
+        // Parse Cmd
+        if (strstr(line, "\"Cmd\"")) {
+            char *start = strchr(line, ':');
+            if (start) {
+                start = strchr(start, '"');
+                if (start) {
+                    start++;
+                    char *end = strchr(start, '"');
+                    if (end) {
+                        strncpy(manifest->cmd, start, end - start);
+                        manifest->cmd[end - start] = '\0';
+                    }
+                }
+            }
+        }
+        
+        // Parse WorkingDir
+        if (strstr(line, "\"WorkingDir\"")) {
+            char *start = strchr(line, ':');
+            if (start) {
+                start = strchr(start, '"');
+                if (start) {
+                    start++;
+                    char *end = strchr(start, '"');
+                    if (end) {
+                        strncpy(manifest->workingDir, start, end - start);
+                        manifest->workingDir[end - start] = '\0';
+                    }
+                }
+            }
+        }
+        
+        // Parse Env array
+        if (strstr(line, "\"Env\"")) {
+            while (fgets(line, sizeof(line), fp)) {
+                if (strchr(line, ']')) break;
+                if (strstr(line, "\"")) {
+                    char *start = strchr(line, '"');
+                    if (start) {
+                        start++;
+                        char *end = strchr(start, '"');
+                        if (end && manifest->envCount < 10) {
+                            strncpy(manifest->env[manifest->envCount], start, end - start);
+                            manifest->env[manifest->envCount][end - start] = '\0';
+                            manifest->envCount++;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    
+    fclose(fp);
+    printf("✅ Manifest loaded: %d layers, %d env vars\n", manifest->layerCount, manifest->envCount);
+    return 0;
+}
+
+// Extract layers into runtime filesystem
+int extract_layers(ImageManifest *manifest) {
+    printf("📦 Extracting %d layers...\n", manifest->layerCount);
+    
+    for (int i = 0; i < manifest->layerCount; i++) {
+        char tarPath[512];
+        sprintf(tarPath, "%s/.docksmith/layers/%s.tar", getenv("HOME"), manifest->layers[i]);
+        
+        char cmd[1024];
+        sprintf(cmd, "tar -xf %s -C runtime_fs/ 2>&1", tarPath);
+        
+        printf("  Layer %d: %s\n", i + 1, manifest->layers[i]);
+        int ret = system(cmd);
+        if (ret != 0) {
+            printf("❌ Failed to extract layer: %s\n", manifest->layers[i]);
+            return -1;
+        }
+    }
+    
+    printf("✅ All layers extracted\n");
+    return 0;
 }
 
 int main(int argc, char *argv[]) {
@@ -410,7 +604,117 @@ int main(int argc, char *argv[]) {
             printf("  CreatedBy: %s\n", layerCreatedBy[i]);
         }
 
+        // Save image manifest for run command
+        printf("\n💾 Saving image manifest...\n");
+        char manifestPath[512];
+        sprintf(manifestPath, "%s/.docksmith/images/%s.json", getenv("HOME"), currentImage.name);
+        FILE *manifest_fp = fopen(manifestPath, "w");
+        if (manifest_fp) {
+            fprintf(manifest_fp, "{\n");
+            fprintf(manifest_fp, "  \"name\": \"%s\",\n", currentImage.name);
+            fprintf(manifest_fp, "  \"layers\": [\n");
+            for (int i = 0; i < layerCount; i++) {
+                fprintf(manifest_fp, "    \"%s\"", layerDigests[i]);
+                if (i < layerCount - 1) fprintf(manifest_fp, ",");
+                fprintf(manifest_fp, "\n");
+            }
+            fprintf(manifest_fp, "  ],\n");
+            fprintf(manifest_fp, "  \"config\": {\n");
+            fprintf(manifest_fp, "    \"Cmd\": \"%s\",\n", currentImage.cmd);
+            fprintf(manifest_fp, "    \"WorkingDir\": \"%s\",\n", currentImage.workingDir);
+            fprintf(manifest_fp, "    \"Env\": [\n");
+            for (int i = 0; i < currentImage.envCount; i++) {
+                fprintf(manifest_fp, "      \"%s=%s\"", currentImage.envKeys[i], currentImage.envValues[i]);
+                if (i < currentImage.envCount - 1) fprintf(manifest_fp, ",");
+                fprintf(manifest_fp, "\n");
+            }
+            fprintf(manifest_fp, "    ]\n");
+            fprintf(manifest_fp, "  }\n");
+            fprintf(manifest_fp, "}\n");
+            fclose(manifest_fp);
+            printf("✅ Manifest saved to: %s\n", manifestPath);
+        }
+
         fclose(fp);
         return 0;
+    }
+
+    // RUN command
+    else if (strcmp(argv[1], "run") == 0) {
+        if (argc < 3) {
+            printf("Usage: docksmith run <image:tag> [command]\n");
+            return 1;
+        }
+        
+        const char *imageRef = argv[2];
+        const char *override_cmd = (argc > 3) ? argv[3] : NULL;
+        
+        printf("🚀 Running container: %s\n", imageRef);
+        fflush(stdout);
+        
+        // Load image manifest
+        ImageManifest manifest;
+        if (load_manifest(imageRef, &manifest) < 0) {
+            return 1;
+        }
+        
+        printf("✅ Manifest loaded (%d layers)\n", manifest.layerCount);
+        fflush(stdout);
+        
+        // Create runtime filesystem
+        printf("📂 Creating runtime filesystem...\n");
+        fflush(stdout);
+        system("rm -rf runtime_fs 2>&1");
+        system("mkdir -p runtime_fs 2>&1");
+        
+        // Extract layers
+        if (extract_layers(&manifest) < 0) {
+            return 1;
+        }
+        
+        // Apply environment variables
+        printf("🔧 Setting environment variables...\n");
+        for (int i = 0; i < manifest.envCount; i++) {
+            char envCopy[200];
+            strcpy(envCopy, manifest.env[i]);
+            char *eq = strchr(envCopy, '=');
+            if (eq) {
+                *eq = '\0';
+                setenv(envCopy, eq + 1, 1);
+                printf("  %s=%s\n", envCopy, eq + 1);
+            }
+        }
+        
+        // Determine command to run
+        char finalCmd[512];
+        if (override_cmd) {
+            strcpy(finalCmd, override_cmd);
+            printf("📝 Override command: %s\n", finalCmd);
+        } else if (manifest.cmd[0] != '\0') {
+            strcpy(finalCmd, manifest.cmd);
+            printf("📝 Default command: %s\n", finalCmd);
+        } else {
+            printf("❌ No command specified (no CMD in manifest and no override)\n");
+            return 1;
+        }
+        
+        printf("📍 Working dir: %s\n", manifest.workingDir);
+        fflush(stdout);
+        
+        // Execute in container
+        printf("🏃 Executing...\n\n");
+        fflush(stdout);
+        
+        int exit_code = run_container_with_workdir("runtime_fs", finalCmd, manifest.workingDir);
+        
+        printf("\n✅ Container exited with code: %d\n", exit_code);
+        
+        return exit_code;
+    }
+
+    else {
+        printf("Unknown command: %s\n", argv[1]);
+        printf("Usage: docksmith <build|run>\n");
+        return 1;
     }
 }
