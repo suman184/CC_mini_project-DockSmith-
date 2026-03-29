@@ -263,8 +263,16 @@ int main(int argc, char *argv[]) {
                 system("mkdir -p temp_fs");
                 
                 // Copy minimal runtime libraries for chroot isolation
-                system("cp -r /bin temp_fs/");
-                system("cp -r /lib temp_fs/");
+                system("cp -r /bin temp_fs/ 2>&1");
+                system("cp -r /lib temp_fs/ 2>&1");
+                
+                // Verify /bin/sh exists in container
+                FILE *test = fopen("temp_fs/bin/sh", "r");
+                if (!test) {
+                    printf("❌ ERROR: /bin/sh not found in temp_fs/bin/\n");
+                    return 1;
+                }
+                fclose(test);
                 
                 printf("📦 Temp filesystem initialized\n");
             }
