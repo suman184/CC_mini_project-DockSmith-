@@ -268,20 +268,20 @@ int main(int argc, char *argv[]) {
                 system("mkdir -p temp_fs");
                 
                 // Copy minimal runtime libraries for chroot isolation using absolute paths
-                char cpBinCmd[512];
+                char cpBinCmd[1024];
                 sprintf(cpBinCmd, "cp -r /bin %s/temp_fs/ 2>&1", cwd);
                 printf("🔧 Executing: %s\n", cpBinCmd);
                 int ret1 = system(cpBinCmd);
                 printf("   Return code: %d\n", ret1);
                 
-                char cpLibCmd[512];
+                char cpLibCmd[1024];
                 sprintf(cpLibCmd, "cp -r /lib %s/temp_fs/ 2>&1", cwd);
                 printf("🔧 Executing: %s\n", cpLibCmd);
                 int ret2 = system(cpLibCmd);
                 printf("   Return code: %d\n", ret2);
                 
                 // Verify /bin/sh exists in container
-                char shPath[256];
+                char shPath[512];
                 sprintf(shPath, "%s/temp_fs/bin/sh", cwd);
                 FILE *test = fopen(shPath, "r");
                 if (!test) {
