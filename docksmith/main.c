@@ -206,67 +206,6 @@ void create_layer(FileInfo *before, int beforeCount,
     system("rm -f filelist.txt hash.txt");
 }
 
-// ISOLATED CONTAINER EXECUTION WITH CHROOT
-int run_in_container(const char *rootfs, char *cmd) {
-    pid_t pid = fork();
-    
-    if (pid < 0) {
-        perror("❌ fork() failed");
-        return -1;
-    }
-    
-    if (pid == 0) {
-        // CHILD PROCESS
-        // Convert rootfs path to absolute if needed
-        char abs_rootfs[512];
-        if (rootfs[0] == '/') {
-            strcpy(abs_rootfs, rootfs);
-        } else {
-            getcwd(abs_rootfs, sizeof(abs_rootfs));
-            strcat(abs_rootfs, "/");
-            strcat(abs_rootfs, rootfs);
-        }
-        
-        // Change to the rootfs first
-        if (chdir(abs_rootfs) < 0) {
-            perror("❌ chdir() to rootfs failed");
-            exit(1);
-        }
-        
-        // Apply chroot to isolate filesystem
-        if (chroot(".") < 0) {
-            perror("❌ chroot() failed");
-            exit(1);
-        }
-        
-        // Change to root directory inside container
-        if (chdir("/") < 0) {
-            perror("❌ chdir() to / inside container failed");
-            exit(1);
-        }
-        
-        // Execute the command inside the isolated container
-        execl("/bin/sh", "sh", "-c", cmd, NULL);
-        
-        // If execl returns, it failed
-        perror("❌ execl() failed");
-        exit(1);
-    } else {
-        // PARENT PROCESS - wait for child
-        int status;
-        waitpid(pid, &status, 0);
-        
-        if (WIFEXITED(status)) {
-            return WEXITSTATUS(status);
-        } else if (WIFSIGNALED(status)) {
-            fprintf(stderr, "❌ Child process terminated by signal %d\n", WTERMSIG(status));
-            return -1;
-        }
-        
-        return -1;
-    }
-}
-
 int main(int argc, char *argv[]) {
     if (argc < 2) {
         printf("Usage: docksmith <command>\n");
