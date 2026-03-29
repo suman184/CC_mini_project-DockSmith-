@@ -9,6 +9,7 @@
 #include <sys/wait.h>
 #include <sys/types.h>
 #include <sys/wait.h>
+#include <ctype.h>
 
 #define TEMP_FS "./temp_fs"
 
@@ -318,16 +319,29 @@ int load_manifest(const char *imageName, ImageManifest *manifest) {
         // Parse layers
         if (strstr(line, "\"layers\"")) {
             while (fgets(line, sizeof(line), fp)) {
-                if (strchr(line, '}')) break;
-                if (strstr(line, "sha256:") || (strstr(line, "\"") && !strstr(line, "layers"))) {
+                if (strchr(line, ']')) break;  // End of layers array
+                if (strstr(line, "\"")) {
                     char *start = strchr(line, '"');
                     if (start) {
                         start++;
                         char *end = strchr(start, '"');
                         if (end && start != end) {
-                            strncpy(manifest->layers[manifest->layerCount], start, end - start);
-                            manifest->layers[manifest->layerCount][end - start] = '\0';
-                            manifest->layerCount++;
+                            int len = end - start;
+                            // Only accept valid hex strings (SHA256 = 64 chars)
+                            if (len == 64) {
+                                int valid = 1;
+                                for (int j = 0; j < len; j++) {
+                                    if (!isxdigit(start[j])) {
+                                        valid = 0;
+                                        break;
+                                    }
+                                }
+                                if (valid && manifest->layerCount < 100) {
+                                    strncpy(manifest->layers[manifest->layerCount], start, len);
+                                    manifest->layers[manifest->layerCount][len] = '\0';
+                                    manifest->layerCount++;
+                                }
+                            }
                         }
                     }
                 }
