@@ -281,7 +281,7 @@ int main(int argc, char *argv[]) {
             else if (strcmp(command, "COPY") == 0) {
                 printf("-> Handling COPY\n");
 
-                FileInfo before[1000], after[1000];
+                FileInfo before[50000], after[50000];
                 int beforeCount = 0, afterCount = 0;
 
                 take_snapshot(TEMP_FS, before, &beforeCount);
@@ -311,7 +311,7 @@ int main(int argc, char *argv[]) {
             else if (strcmp(command, "RUN") == 0) {
                 printf("-> Handling RUN\n");
 
-                FileInfo before[1000], after[1000];
+                FileInfo before[50000], after[50000];
                 int beforeCount = 0, afterCount = 0;
 
                 take_snapshot(TEMP_FS, before, &beforeCount);
