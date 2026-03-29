@@ -425,6 +425,13 @@ int extract_layers(ImageManifest *manifest) {
     }
     
     printf("✅ All layers extracted\n");
+    
+    // Ensure runtime_fs has shell and libraries for execution
+    system("mkdir -p runtime_fs/bin runtime_fs/lib runtime_fs/lib64 2>&1");
+    system("cp -L /bin/sh runtime_fs/bin/ 2>&1");
+    system("cp -L /lib/aarch64-linux-gnu/*.so* runtime_fs/lib/ 2>/dev/null || true");
+    system("cp -L /lib64/*.so* runtime_fs/lib64/ 2>/dev/null || true");
+    
     return 0;
 }
 
