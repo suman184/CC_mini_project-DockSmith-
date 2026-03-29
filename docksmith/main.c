@@ -267,18 +267,26 @@ int main(int argc, char *argv[]) {
                 system("rm -rf temp_fs");
                 system("mkdir -p temp_fs");
                 
-                // Copy minimal runtime libraries for chroot isolation using absolute paths
+                // Copy minimal runtime libraries for chroot isolation
+                // Use -L flag to follow symlinks (e.g., /bin -> /usr/bin, /lib -> /usr/lib)
                 char cpBinCmd[1024];
-                sprintf(cpBinCmd, "cp -r /bin %s/temp_fs/ 2>&1", cwd);
+                sprintf(cpBinCmd, "cp -rL /bin %s/temp_fs/ 2>&1", cwd);
                 printf("🔧 Executing: %s\n", cpBinCmd);
                 int ret1 = system(cpBinCmd);
                 printf("   Return code: %d\n", ret1);
                 
                 char cpLibCmd[1024];
-                sprintf(cpLibCmd, "cp -r /lib %s/temp_fs/ 2>&1", cwd);
+                sprintf(cpLibCmd, "cp -rL /lib %s/temp_fs/ 2>&1", cwd);
                 printf("🔧 Executing: %s\n", cpLibCmd);
                 int ret2 = system(cpLibCmd);
                 printf("   Return code: %d\n", ret2);
+                
+                // Also copy /usr for binaries and libraries that reference it
+                char cpUsrCmd[1024];
+                sprintf(cpUsrCmd, "cp -rL /usr %s/temp_fs/ 2>&1", cwd);
+                printf("🔧 Executing: %s\n", cpUsrCmd);
+                int ret3 = system(cpUsrCmd);
+                printf("   Return code: %d\n", ret3);
                 
                 // Verify /bin/sh exists in container
                 char shPath[1024];
