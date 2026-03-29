@@ -259,17 +259,35 @@ int main(int argc, char *argv[]) {
 
                 fclose(img);
 
+                // Get current working directory
+                char cwd[512];
+                getcwd(cwd, sizeof(cwd));
+                printf("📂 Working directory: %s\n", cwd);
+
                 system("rm -rf temp_fs");
                 system("mkdir -p temp_fs");
                 
-                // Copy minimal runtime libraries for chroot isolation
-                system("cp -r /bin temp_fs/ 2>&1");
-                system("cp -r /lib temp_fs/ 2>&1");
+                // Copy minimal runtime libraries for chroot isolation using absolute paths
+                char cpBinCmd[512];
+                sprintf(cpBinCmd, "cp -r /bin %s/temp_fs/ 2>&1", cwd);
+                printf("🔧 Executing: %s\n", cpBinCmd);
+                int ret1 = system(cpBinCmd);
+                printf("   Return code: %d\n", ret1);
+                
+                char cpLibCmd[512];
+                sprintf(cpLibCmd, "cp -r /lib %s/temp_fs/ 2>&1", cwd);
+                printf("🔧 Executing: %s\n", cpLibCmd);
+                int ret2 = system(cpLibCmd);
+                printf("   Return code: %d\n", ret2);
                 
                 // Verify /bin/sh exists in container
-                FILE *test = fopen("temp_fs/bin/sh", "r");
+                char shPath[256];
+                sprintf(shPath, "%s/temp_fs/bin/sh", cwd);
+                FILE *test = fopen(shPath, "r");
                 if (!test) {
-                    printf("❌ ERROR: /bin/sh not found in temp_fs/bin/\n");
+                    printf("❌ ERROR: %s not found\n", shPath);
+                    printf("   Listing temp_fs contents:\n");
+                    system("ls -la temp_fs/ 2>&1");
                     return 1;
                 }
                 fclose(test);
