@@ -265,14 +265,15 @@ int main(int argc, char *argv[]) {
                 system("mkdir -p temp_fs");
                 
                 // Setup /bin/sh for RUN command isolation
-                // Copy shell binary and all required system libraries
-                system("mkdir -p temp_fs/bin");
+                // Copy shell binary and its minimal dependencies
+                system("mkdir -p temp_fs/bin temp_fs/lib64 temp_fs/lib");
                 system("cp /bin/sh temp_fs/bin/ 2>/dev/null || true");
                 
-                // Copy all lib directories (handles both /lib64 and /lib paths)
-                system("cp -r /lib64 temp_fs/ 2>/dev/null || true");
-                system("cp -r /lib temp_fs/ 2>/dev/null || true");
-                system("cp -r /usr/lib temp_fs/usr/ 2>/dev/null || mkdir -p temp_fs/usr 2>/dev/null || true");
+                // Use ldd to find and copy only required libraries
+                system("for lib in $(ldd /bin/sh 2>/dev/null | grep -o '/[^ ]*/[^ ]*' | sort -u); do "
+                       "  cp \"$lib\" temp_fs/$(dirname $lib 2>/dev/null) 2>/dev/null || true; "
+                       "  mkdir -p temp_fs/$(dirname $lib 2>/dev/null) 2>/dev/null || true; "
+                       "done");
                 
                 printf("📦 Temp filesystem initialized\n");
             }
@@ -281,7 +282,7 @@ int main(int argc, char *argv[]) {
             else if (strcmp(command, "COPY") == 0) {
                 printf("-> Handling COPY\n");
 
-                FileInfo before[50000], after[50000];
+                FileInfo before[5000], after[5000];
                 int beforeCount = 0, afterCount = 0;
 
                 take_snapshot(TEMP_FS, before, &beforeCount);
@@ -311,7 +312,7 @@ int main(int argc, char *argv[]) {
             else if (strcmp(command, "RUN") == 0) {
                 printf("-> Handling RUN\n");
 
-                FileInfo before[50000], after[50000];
+                FileInfo before[5000], after[5000];
                 int beforeCount = 0, afterCount = 0;
 
                 take_snapshot(TEMP_FS, before, &beforeCount);
