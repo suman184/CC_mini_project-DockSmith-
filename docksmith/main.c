@@ -266,7 +266,7 @@ int main(int argc, char *argv[]) {
                 
                 // Setup /bin/sh for RUN command isolation
                 system("mkdir -p temp_fs/bin");
-                system("sudo cp /bin/sh temp_fs/bin/ 2>/dev/null");
+                system("cp /bin/sh temp_fs/bin/ 2>/dev/null || true");
                 
                 printf("📦 Temp filesystem initialized\n");
             }
