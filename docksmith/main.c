@@ -140,7 +140,7 @@ int run_in_container(const char *rootfs, char *cmd) {
             exit(1);
         }
         
-        setenv("LD_LIBRARY_PATH", "/lib:/lib/aarch64-linux-gnu", 1);
+        setenv("LD_LIBRARY_PATH", "/lib:/lib64", 1);
         
         execl("/bin/sh", "sh", "-c", cmd, NULL);
         
@@ -274,7 +274,7 @@ int run_container_with_workdir(const char *rootfs, const char *cmd, const char *
             }
         }
         
-        setenv("LD_LIBRARY_PATH", "/lib:/lib/aarch64-linux-gnu", 1);
+        setenv("LD_LIBRARY_PATH", "/lib:/lib64", 1);
         
         execl("/bin/sh", "sh", "-c", cmd, NULL);
         
@@ -497,10 +497,11 @@ int main(int argc, char *argv[]) {
                 
                 printf("   Copying libraries (aarch64)\n");
                 fflush(stdout);
-                // Try multiple locations for aarch64, follow symlinks with -L
-                system("cp -L /lib/aarch64-linux-gnu/libc.so.6 temp_fs/lib/ 2>/dev/null || cp -L /lib64/libc.so.6 temp_fs/lib64/ 2>/dev/null || true");
-                system("cp -L /lib/aarch64-linux-gnu/ld-linux-aarch64.so.1 temp_fs/lib/ 2>/dev/null || cp -L /lib64/ld-linux-aarch64.so.1 temp_fs/lib64/ 2>/dev/null || true");
-                system("cp -L /lib/aarch64-linux-gnu/libm.so.6 temp_fs/lib/ 2>/dev/null || cp -L /lib64/libm.so.6 temp_fs/lib64/ 2>/dev/null || true");
+                // Copy all .so* files from aarch64 lib directory (follows symlinks with -L)
+                system("cp -L /lib/aarch64-linux-gnu/*.so* temp_fs/lib/ 2>/dev/null || true");
+                system("cp -L /lib/aarch64-linux-gnu/ld-linux-aarch64.so.1 temp_fs/lib/ 2>/dev/null || true");
+                // Fallback to /lib64 if needed
+                system("mkdir -p temp_fs/lib64 && cp -L /lib64/*.so* temp_fs/lib64/ 2>/dev/null || true");
                 
                 printf("📦 Temp filesystem initialized\n");
                 fflush(stdout);
