@@ -193,7 +193,10 @@ int run_in_container(const char *rootfs, char *cmd) {
 // CREATE LAYER
 void create_layer(FileInfo *before, int beforeCount,
                   FileInfo *after, int afterCount,
-                  const char *instruction, int *cache_invalidated) {
+                  const char *instruction, const char *workingDir,
+                  const char **envKeys, const char **envValues, int envCount,
+                  const char *prevLayerDigest,
+                  int *cache_invalidated) {
 
     FILE *list = fopen("filelist.txt", "w");
 
@@ -229,16 +232,34 @@ void create_layer(FileInfo *before, int beforeCount,
     fscanf(h, "%s", tar_hash);
     fclose(h);
 
-    // Build cache key: combine tar contents hash with instruction text
-    // This ensures changing RUN instruction invalidates cache
-    char cache_key[2048];
-    snprintf(cache_key, sizeof(cache_key), "%s|%s", tar_hash, instruction);
+    // Build COMPLETE cache key per spec:
+    // - previous layer digest (or base)
+    // - instruction text
+    // - WORKDIR value
+    // - sorted ENV variables
+    // - tar_hash (files changed)
+    char cache_key[4096];
+    snprintf(cache_key, sizeof(cache_key), "%s|%s|%s",
+        prevLayerDigest ? prevLayerDigest : "base",
+        instruction,
+        workingDir);
     
-    // Compute SHA256 of combined cache key
+    // Add sorted ENV variables
+    for (int i = 0; i < envCount; i++) {
+        char env_entry[256];
+        snprintf(env_entry, sizeof(env_entry), "|%s=%s", envKeys[i], envValues[i]);
+        strcat(cache_key, env_entry);
+    }
+    
+    // Add tar contents hash
+    char final_key[4096];
+    snprintf(final_key, sizeof(final_key), "%s|%s", cache_key, tar_hash);
+    
+    // Compute SHA256 of complete cache key
     char layer_hash[65];
-    compute_string_sha256(cache_key, layer_hash);
+    compute_string_sha256(final_key, layer_hash);
 
-    // Use computed hash as the layer identifier (instead of just tar_hash)
+    // Use computed hash as the layer identifier
     char hash[65];
     strcpy(hash, layer_hash);
 
@@ -632,7 +653,13 @@ int main(int argc, char *argv[]) {
 
                 take_snapshot(TEMP_FS, after, &afterCount);
 
-                create_layer(before, beforeCount, after, afterCount, "COPY", &cache_invalidated);
+                create_layer(before, beforeCount, after, afterCount, "COPY",
+                    currentImage.workingDir,
+                    (const char**)currentImage.envKeys,
+                    (const char**)currentImage.envValues,
+                    currentImage.envCount,
+                    layerCount > 0 ? layerDigests[layerCount-1] : NULL,
+                    &cache_invalidated);
             }
 
             // RUN
@@ -657,7 +684,13 @@ int main(int argc, char *argv[]) {
 
                 take_snapshot(TEMP_FS, after, &afterCount);
 
-                create_layer(before, beforeCount, after, afterCount, "RUN", &cache_invalidated);
+                create_layer(before, beforeCount, after, afterCount, "RUN",
+                    currentImage.workingDir,
+                    (const char**)currentImage.envKeys,
+                    (const char**)currentImage.envValues,
+                    currentImage.envCount,
+                    layerCount > 0 ? layerDigests[layerCount-1] : NULL,
+                    &cache_invalidated);
             }
 
             // WORKDIR
