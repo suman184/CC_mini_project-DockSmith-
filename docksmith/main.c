@@ -549,6 +549,9 @@ int main(int argc, char *argv[]) {
                 printf("   Copying sh binary\n");
                 fflush(stdout);
                 system("cp -L /bin/sh temp_fs/bin/ 2>&1");
+                system("cp -L /bin/cat temp_fs/bin/ 2>/dev/null || true");
+                system("cp -L /bin/echo temp_fs/bin/ 2>/dev/null || true");
+                system("cp -L /bin/ls temp_fs/bin/ 2>/dev/null || true");
                 
                 printf("   Copying libraries (aarch64)\n");
                 fflush(stdout);
