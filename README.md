@@ -116,24 +116,26 @@ Process Execution Isolation:
 
 ## 🔧 Building & Usage
 
-### Prerequisites
+### Prerequisites (Ubuntu)
 
-- **macOS/Linux** with development tools
-- GCC compiler
-- GNU tar (`gtar` for deterministic builds)
-- `shasum` for SHA256 hashing
-- `rsync` for file copying
+- Ubuntu 20.04+ with development tools
+- GCC compiler: `sudo apt-get install build-essential`
+- GNU tar: (included by default)
+- sha256sum: (included by default)
+- rsync: `sudo apt-get install rsync`
 
 ### Build Instructions
 
 ```bash
+# 1. Run setup
+bash SETUP_UBUNTU.sh
+
+# 2. Build binary
 cd docksmith
 gcc -o docksmith main.c
 
-# On macOS: Verify compilation (warnings are normal)
-./docksmith build
-
-# On Linux: Same process, works with full chroot support
+# 3. Verify
+./docksmith images
 ```
 
 ### Important Setup Before Testing
@@ -188,16 +190,21 @@ CMD ["echo", "Container running"]
 ### How to Run
 
 ```bash
-# 1. Prepare base image (must exist in ~/.docksmith/images/base.json)
-mkdir -p ~/.docksmith/images/
+# 1. Build image with proper naming
+cd demo_app
+../docksmith/docksmith build -t myapp:1.0 .
 
-# 2. Create Docksmithfile in your project
-echo "FROM base" > Docksmithfile
-echo "RUN echo Hello" >> Docksmithfile
+# 2. List images
+../docksmith/docksmith images
 
-# 3. Build
-cd docksmith
-./docksmith build
+# 3. Run container
+../docksmith/docksmith run myapp:1.0
+
+# 4. Run with ENV override
+../docksmith/docksmith run myapp:1.0 -e APP_NAME=MyAppName
+
+# 5. Delete image
+../docksmith/docksmith rmi myapp:1.0
 ```
 
 ---
