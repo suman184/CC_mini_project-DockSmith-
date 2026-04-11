@@ -38,6 +38,33 @@ long layerSizes[100];
 char layerCreatedBy[100][200];
 int layerCount = 0;
 
+// Compute SHA256 of a string
+void compute_string_sha256(const char *input, char *hash_out) {
+    // Write string to temp file
+    FILE *fp = fopen("/tmp/manifest_temp.txt", "w");
+    if (!fp) {
+        strcpy(hash_out, "0000000000000000000000000000000000000000000000000000000000000000");
+        return;
+    }
+    fprintf(fp, "%s", input);
+    fclose(fp);
+    
+    // Compute SHA256 and save to another file
+    system("sha256sum /tmp/manifest_temp.txt > /tmp/manifest_hash.txt 2>/dev/null || shasum -a 256 /tmp/manifest_temp.txt > /tmp/manifest_hash.txt");
+    
+    // Read hash
+    FILE *hf = fopen("/tmp/manifest_hash.txt", "r");
+    if (hf) {
+        char buf[128];
+        fgets(buf, sizeof(buf), hf);
+        sscanf(buf, "%s", hash_out);
+        fclose(hf);
+    }
+    
+    // Cleanup
+    system("rm -f /tmp/manifest_temp.txt /tmp/manifest_hash.txt");
+}
+
 // Image manifest for run command
 typedef struct {
     char layers[100][100];
@@ -185,22 +212,38 @@ void create_layer(FileInfo *before, int beforeCount,
     fclose(list);
 
     // Always create a layer (even if empty)
-    // deterministic tar (use gtar on macOS, tar on Linux)
+    // deterministic tar with normalized permissions (use gtar on macOS, tar on Linux)
     if (changedCount == 0) {
-        // Create empty tar file
-        system("tar --sort=name --mtime='UTC 1970-01-01' -cf layer.tar --files-from /dev/null 2>/dev/null || gtar --sort=name --mtime='UTC 1970-01-01' -cf layer.tar --files-from /dev/null");
+        // Create empty tar file with normalized permissions
+        system("tar --sort=name --mtime='UTC 1970-01-01' --mode=0755 --owner=0 --group=0 -cf layer.tar --files-from /dev/null 2>/dev/null || gtar --sort=name --mtime='UTC 1970-01-01' --mode=0755 --owner=0 --group=0 -cf layer.tar --files-from /dev/null");
     } else {
-        // Create tar with changed files
-        system("tar --sort=name --mtime='UTC 1970-01-01' -cf layer.tar -C temp_fs -T filelist.txt 2>/dev/null || gtar --sort=name --mtime='UTC 1970-01-01' -cf layer.tar -C temp_fs -T filelist.txt");
+        // Create tar with changed files and normalized permissions
+        system("tar --sort=name --mtime='UTC 1970-01-01' --mode=0755 --owner=0 --group=0 -cf layer.tar -C temp_fs -T filelist.txt 2>/dev/null || gtar --sort=name --mtime='UTC 1970-01-01' --mode=0755 --owner=0 --group=0 -cf layer.tar -C temp_fs -T filelist.txt");
     }
 
     // hash (use sha256sum on Linux, shasum on macOS)
     system("sha256sum layer.tar > hash.txt 2>/dev/null || shasum -a 256 layer.tar > hash.txt");
 
     FILE *h = fopen("hash.txt", "r");
-    char hash[100];
-    fscanf(h, "%s", hash);
+    char tar_hash[100];
+    fscanf(h, "%s", tar_hash);
     fclose(h);
+
+    // Build comprehensive cache key including instruction, WORKDIR, and ENV
+    char cache_key[2048];
+    snprintf(cache_key, sizeof(cache_key), "%s|%s|%s|", tar_hash, instruction, currentImage.workingDir);
+    
+    // Add sorted environment variables to cache key
+    for (int i = 0; i < currentImage.envCount; i++) {
+        char env_pair[256];
+        snprintf(env_pair, sizeof(env_pair), "%s=%s|", currentImage.envKeys[i], currentImage.envValues[i]);
+        strcat(cache_key, env_pair);
+    }
+    
+    // Compute SHA256 of combined cache key
+    char combined_cache[2048];
+    snprintf(combined_cache, sizeof(combined_cache), "%s", cache_key);
+    compute_string_sha256(combined_cache, hash);
 
     // ensure layer directory
     char mkdirCmd[300];
@@ -670,19 +713,60 @@ int main(int argc, char *argv[]) {
         printf("Saving manifest...\n");
         char manifestPath[512];
         sprintf(manifestPath, "%s/.docksmith/images/%s_%s.json", getenv("HOME"), currentImage.name, currentImage.tag);
+        
+        // First pass: Generate manifest with empty digest
+        char manifest_buffer[4096];
+        snprintf(manifest_buffer, sizeof(manifest_buffer),
+            "{\n"
+            "  \"name\": \"%s\",\n"
+            "  \"tag\": \"%s\",\n"
+            "  \"digest\": \"\",\n"  // Empty for hash computation
+            "  \"layers\": [\n",
+            currentImage.name, currentImage.tag);
+        
+        // Add layers
+        for (int i = 0; i < layerCount; i++) {
+            char layer_line[200];
+            snprintf(layer_line, sizeof(layer_line), "    \"%s\"%s\n", 
+                layerDigests[i], (i < layerCount - 1) ? "," : "");
+            strcat(manifest_buffer, layer_line);
+        }
+        
+        strcat(manifest_buffer, 
+            "  ],\n"
+            "  \"config\": {\n");
+        
+        // Add config
+        char config_line[400];
+        snprintf(config_line, sizeof(config_line),
+            "    \"Cmd\": \"%s\",\n"
+            "    \"WorkingDir\": \"%s\",\n"
+            "    \"Env\": [\n",
+            currentImage.cmd, currentImage.workingDir);
+        strcat(manifest_buffer, config_line);
+        
+        // Add environment (sorted for determinism)
+        for (int i = 0; i < currentImage.envCount; i++) {
+            char env_line[200];
+            snprintf(env_line, sizeof(env_line), "      \"%s=%s\"%s\n",
+                currentImage.envKeys[i], currentImage.envValues[i],
+                (i < currentImage.envCount - 1) ? "," : "");
+            strcat(manifest_buffer, env_line);
+        }
+        
+        strcat(manifest_buffer, "    ]\n  }\n}\n");
+        
+        // Compute digest of manifest (deterministic - no timestamp)
+        char manifest_digest[65];
+        compute_string_sha256(manifest_buffer, manifest_digest);
+        
+        // Second pass: Generate final manifest WITH digest
         FILE *manifest_fp = fopen(manifestPath, "w");
         if (manifest_fp) {
-            // Get current timestamp
-            time_t now = time(NULL);
-            struct tm *tm_info = localtime(&now);
-            char timestamp[32];
-            strftime(timestamp, sizeof(timestamp), "%Y-%m-%dT%H:%M:%S", tm_info);
-            
             fprintf(manifest_fp, "{\n");
             fprintf(manifest_fp, "  \"name\": \"%s\",\n", currentImage.name);
             fprintf(manifest_fp, "  \"tag\": \"%s\",\n", currentImage.tag);
-            fprintf(manifest_fp, "  \"digest\": \"%s\",\n", layerCount > 0 ? layerDigests[layerCount-1] : "sha256:0000000000000000000000000000000000000000000000000000000000000000");
-            fprintf(manifest_fp, "  \"created\": \"%s\",\n", timestamp);
+            fprintf(manifest_fp, "  \"digest\": \"%s\",\n", manifest_digest);
             fprintf(manifest_fp, "  \"layers\": [\n");
             for (int i = 0; i < layerCount; i++) {
                 fprintf(manifest_fp, "    \"%s\"", layerDigests[i]);
@@ -703,7 +787,7 @@ int main(int argc, char *argv[]) {
             fprintf(manifest_fp, "  }\n");
             fprintf(manifest_fp, "}\n");
             fclose(manifest_fp);
-            printf("Manifest saved\n");
+            printf("Manifest saved (digest: %.12s)\n", manifest_digest);
         }
 
         fclose(fp);
