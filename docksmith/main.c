@@ -832,7 +832,7 @@ int main(int argc, char *argv[]) {
             if (sscanf(entry->d_name, "%[^_]_%[^.]", name, tag) == 2) {
                 // Read manifest to get digest and created timestamp
                 char manifestPath[512];
-                sprintf(manifestPath, "%s/.docksmith/images/%s", imagesDir, entry->d_name);
+                sprintf(manifestPath, "%s/%s", imagesDir, entry->d_name);
                 
                 FILE *manifest = fopen(manifestPath, "r");
                 char digest[256] = "N/A";
@@ -842,26 +842,32 @@ int main(int argc, char *argv[]) {
                     char line[512];
                     while (fgets(line, sizeof(line), manifest)) {
                         // Extract digest from "digest": "sha256:..."
-                        if (strstr(line, "\"digest\"")) {
-                            char *start = strchr(line, '"');
-                            if (start) {
-                                start++;
-                                char *end = strchr(start, '"');
-                                if (end) {
-                                    strncpy(digest, start, end - start);
-                                    digest[end - start] = '\0';
+                        if (strstr(line, "digest")) {
+                            char *colon = strchr(line, ':');
+                            if (colon) {
+                                char *quote = strchr(colon, '"');
+                                if (quote) {
+                                    quote++;
+                                    char *end = strchr(quote, '"');
+                                    if (end) {
+                                        strncpy(digest, quote, end - quote);
+                                        digest[end - quote] = '\0';
+                                    }
                                 }
                             }
                         }
                         // Extract created from "created": "..."
-                        if (strstr(line, "\"created\"")) {
-                            char *start = strchr(line, '"');
-                            if (start) {
-                                start++;
-                                char *end = strchr(start, '"');
-                                if (end) {
-                                    strncpy(created, start, end - start);
-                                    created[end - start] = '\0';
+                        if (strstr(line, "created")) {
+                            char *colon = strchr(line, ':');
+                            if (colon) {
+                                char *quote = strchr(colon, '"');
+                                if (quote) {
+                                    quote++;
+                                    char *end = strchr(quote, '"');
+                                    if (end) {
+                                        strncpy(created, quote, end - quote);
+                                        created[end - quote] = '\0';
+                                    }
                                 }
                             }
                         }
