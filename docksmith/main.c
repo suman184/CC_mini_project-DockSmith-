@@ -671,9 +671,17 @@ int main(int argc, char *argv[]) {
         sprintf(manifestPath, "%s/.docksmith/images/%s_%s.json", getenv("HOME"), currentImage.name, currentImage.tag);
         FILE *manifest_fp = fopen(manifestPath, "w");
         if (manifest_fp) {
+            // Get current timestamp
+            time_t now = time(NULL);
+            struct tm *tm_info = localtime(&now);
+            char timestamp[32];
+            strftime(timestamp, sizeof(timestamp), "%Y-%m-%dT%H:%M:%S", tm_info);
+            
             fprintf(manifest_fp, "{\n");
             fprintf(manifest_fp, "  \"name\": \"%s\",\n", currentImage.name);
             fprintf(manifest_fp, "  \"tag\": \"%s\",\n", currentImage.tag);
+            fprintf(manifest_fp, "  \"digest\": \"%s\",\n", layerCount > 0 ? layerDigests[layerCount-1] : "sha256:0000000000000000000000000000000000000000000000000000000000000000");
+            fprintf(manifest_fp, "  \"created\": \"%s\",\n", timestamp);
             fprintf(manifest_fp, "  \"layers\": [\n");
             for (int i = 0; i < layerCount; i++) {
                 fprintf(manifest_fp, "    \"%s\"", layerDigests[i]);
