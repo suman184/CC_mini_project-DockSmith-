@@ -207,29 +207,34 @@ void create_layer(FileInfo *before, int beforeCount,
     sprintf(mkdirCmd, "mkdir -p %s/.docksmith/layers", getenv("HOME"));
     system(mkdirCmd);
 
-    // move tar
-    char moveCmd[400];
-    sprintf(moveCmd, "mv layer.tar %s/.docksmith/layers/%s.tar", getenv("HOME"), hash);
-    system(moveCmd);
+    // check if layer already exists (cache hit/miss detection)
+    char layerPath[400];
+    sprintf(layerPath, "%s/.docksmith/layers/%s.tar", getenv("HOME"), hash);
+    
+    struct stat st;
+    int cacheHit = (stat(layerPath, &st) == 0);
+
+    if (cacheHit) {
+        printf("  [CACHE HIT]\n");
+    } else {
+        // move tar
+        char moveCmd[400];
+        sprintf(moveCmd, "mv layer.tar %s/.docksmith/layers/%s.tar", getenv("HOME"), hash);
+        system(moveCmd);
+        
+        stat(layerPath, &st);
+        printf("  [CACHE MISS]\n");
+    }
 
     // 🔥 STORE METADATA
     strcpy(layerDigests[layerCount], hash);
-
-    char path[400];
-    sprintf(path, "%s/.docksmith/layers/%s.tar", getenv("HOME"), hash);
-
-    struct stat st;
-    stat(path, &st);
-
     layerSizes[layerCount] = st.st_size;
     strcpy(layerCreatedBy[layerCount], instruction);
-
     layerCount++;
 
-    printf("📦 Layer created: sha256:%s\n", hash);
-    printf("📁 Stored at: ~/.docksmith/layers/%s.tar\n", hash);
+    printf("📦 Layer: sha256:%s\n", hash);
 
-    system("rm -f filelist.txt hash.txt");
+    system("rm -f filelist.txt hash.txt layer.tar");
 }
 
 // Container execution with working directory support
