@@ -239,3 +239,82 @@ Next:
 👉 We build the **actual engine**
 
 ---
+
+
+Final Run commands : 
+mkdir -p ~/.docksmith/images ~/.docksmith/layers ~/.docksmith/cache
+
+cat > ~/.docksmith/images/base.json << 'EOF'
+{
+  "name": "base",
+  "version": "1.0"
+}
+EOF
+
+python docksmith_py.py build -t myapp:latest .
+python docksmith_py.py build -t myapp:latest .
+python docksmith_py.py images
+python docksmith_py.py rmi myapp:latest
+
+
+okay ppl let me make your life easier: lollll
+
+Current project workflow, end-to-end, in order.
+
+1. Entry Point
+
+You run the Python entry script:
+inside docksmith folder: python docksmith_py.py ...
+from repo root: python docksmith/docksmith_py.py ...
+That script just calls the CLI main function in docksmith/docksmith_py.py and docksmith/cli.py.
+2. Command Routing
+
+docksmith/cli.py parses command-line args.
+It routes to one of:
+build
+images
+rmi
+3. Build Flow (Most Important)
+
+build reads docksmith/Docksmithfile line by line.
+It parses instructions in order: FROM, COPY, RUN, WORKDIR, ENV, CMD.
+It initializes/loads:
+cache index via docksmith/cache.py
+base image manifest via docksmith/manifest.py
+local temp filesystem in docksmith/temp_fs
+For each instruction:
+FROM: loads base image metadata (starting point)
+WORKDIR, ENV, CMD: update in-memory build state only
+COPY, RUN: layer-producing steps
+Before each COPY/RUN, cache key is computed from:
+previous layer digest
+instruction text
+current WORKDIR
+ENV state
+COPY source file hashes (for COPY)
+Cache decision:
+hit: reuse existing layer digest ([CACHE HIT])
+miss: execute step and create new layer artifact ([CACHE MISS])
+After all steps, build writes final image manifest in ~/.docksmith/images/ using docksmith/manifest.py.
+Cache index is saved back to ~/.docksmith/cache/index.json via docksmith/cache.py.
+4. Images Flow
+
+images reads all manifests in ~/.docksmith/images/.
+Prints table: name, tag, digest prefix, created.
+Logic is in docksmith/cli.py.
+5. RMI Flow
+
+rmi name:tag loads target manifest.
+Deletes manifest file.
+Reads layer digests from manifest and deletes matching files in ~/.docksmith/layers/.
+Logic is in docksmith/cli.py.
+6. Data Layout (State)
+
+~/.docksmith/images/ -> image manifests
+~/.docksmith/layers/ -> per-layer content-addressed artifacts
+~/.docksmith/cache/index.json -> cache key to layer digest map
+docksmith/temp_fs/ -> temporary build workspace for COPY/RUN effects
+7. Where C Fits Now
+
+docksmith/main.c is legacy path.
+Python path is now the canonical flow for your repo.

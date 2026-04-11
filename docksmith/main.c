@@ -436,6 +436,8 @@ int extract_layers(ImageManifest *manifest) {
 }
 
 int main(int argc, char *argv[]) {
+    fprintf(stderr, "[LEGACY NOTICE] C entrypoint is legacy in this repo. Use Python entrypoint: python docksmith/docksmith_py.py ...\n");
+
     if (argc < 2) {
         printf("Usage: docksmith <command>\n");
         return 1;
