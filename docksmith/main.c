@@ -706,20 +706,51 @@ int main(int argc, char *argv[]) {
             }
         }
 
-        // SPEC-COMPLIANT MANIFEST DIGEST GENERATION
+        // SPEC-COMPLIANT MANIFEST DIGEST GENERATION with created field preservation
         printf("Saving manifest...\n");
         char manifestPath[512];
         sprintf(manifestPath, "%s/.docksmith/images/%s_%s.json", getenv("HOME"), currentImage.name, currentImage.tag);
         
-        // STEP 1: Build canonical JSON with digest="" (deterministic, consistent key order)
+        // Try to load existing manifest to preserve "created" timestamp
+        char created_timestamp[64] = "";
+        FILE *old_manifest = fopen(manifestPath, "r");
+        if (old_manifest) {
+            // Extract existing "created" field
+            char line[512];
+            while (fgets(line, sizeof(line), old_manifest)) {
+                if (strstr(line, "created")) {
+                    char *quote1 = strchr(line, '"');
+                    if (quote1) {
+                        quote1++;
+                        char *quote2 = strchr(quote1, '"');
+                        if (quote2) {
+                            strncpy(created_timestamp, quote1, quote2 - quote1);
+                            created_timestamp[quote2 - quote1] = '\0';
+                            break;
+                        }
+                    }
+                }
+            }
+            fclose(old_manifest);
+        }
+        
+        // If no old manifest, create new timestamp
+        if (strlen(created_timestamp) == 0) {
+            time_t now = time(NULL);
+            struct tm *tm_info = localtime(&now);
+            strftime(created_timestamp, sizeof(created_timestamp), "%Y-%m-%dT%H:%M:%S", tm_info);
+        }
+        
+        // STEP 1: Build canonical JSON with digest="" AND created field (deterministic)
         char manifest_canonical[4096];
         sprintf(manifest_canonical, 
             "{\n"
             "  \"name\": \"%s\",\n"
             "  \"tag\": \"%s\",\n"
             "  \"digest\": \"\",\n"
+            "  \"created\": \"%s\",\n"
             "  \"layers\": [\n",
-            currentImage.name, currentImage.tag);
+            currentImage.name, currentImage.tag, created_timestamp);
         
         // Add layers to canonical form
         for (int i = 0; i < layerCount; i++) {
@@ -752,7 +783,7 @@ int main(int argc, char *argv[]) {
         
         strcat(manifest_canonical, "\n    ]\n  }\n}\n");
         
-        // STEP 2: Compute SHA256 of canonical manifest string (WITHOUT digest value)
+        // STEP 2: Compute SHA256 of canonical manifest string (with created field, without digest value)
         char computed_digest[65];
         compute_string_sha256(manifest_canonical, computed_digest);
         
@@ -764,8 +795,9 @@ int main(int argc, char *argv[]) {
                 "  \"name\": \"%s\",\n"
                 "  \"tag\": \"%s\",\n"
                 "  \"digest\": \"%s\",\n"
+                "  \"created\": \"%s\",\n"
                 "  \"layers\": [\n",
-                currentImage.name, currentImage.tag, computed_digest);
+                currentImage.name, currentImage.tag, computed_digest, created_timestamp);
             
             // Write layers
             for (int i = 0; i < layerCount; i++) {
