@@ -836,8 +836,19 @@ int main(int argc, char *argv[]) {
         while ((entry = readdir(dir)) != NULL) {
             if (!strstr(entry->d_name, ".json")) continue;
             
+            // Parse filename: remove .json extension first
+            char filename[256];
+            strcpy(filename, entry->d_name);
+            char *json_ext = strstr(filename, ".json");
+            if (json_ext) *json_ext = '\0';
+            
+            // Split by underscore: "demoapp_1.0" -> name="demoapp", tag="1.0"
             char name[100], tag[100];
-            if (sscanf(entry->d_name, "%[^_]_%[^.]", name, tag) == 2) {
+            char *underscore = strchr(filename, '_');
+            if (underscore) {
+                strncpy(name, filename, underscore - filename);
+                name[underscore - filename] = '\0';
+                strcpy(tag, underscore + 1);
                 // Read manifest to get digest and created timestamp
                 char manifestPath[512];
                 sprintf(manifestPath, "%s/%s", imagesDir, entry->d_name);
