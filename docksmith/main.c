@@ -709,85 +709,92 @@ int main(int argc, char *argv[]) {
             }
         }
 
-        // Save image manifest
+        // SPEC-COMPLIANT MANIFEST DIGEST GENERATION
         printf("Saving manifest...\n");
         char manifestPath[512];
         sprintf(manifestPath, "%s/.docksmith/images/%s_%s.json", getenv("HOME"), currentImage.name, currentImage.tag);
         
-        // First pass: Generate manifest with empty digest
-        char manifest_buffer[4096];
-        snprintf(manifest_buffer, sizeof(manifest_buffer),
+        // STEP 1: Build canonical JSON with digest="" (deterministic, consistent key order)
+        char manifest_canonical[4096];
+        sprintf(manifest_canonical, 
             "{\n"
             "  \"name\": \"%s\",\n"
             "  \"tag\": \"%s\",\n"
-            "  \"digest\": \"\",\n"  // Empty for hash computation
+            "  \"digest\": \"\",\n"
             "  \"layers\": [\n",
             currentImage.name, currentImage.tag);
         
-        // Add layers
+        // Add layers to canonical form
         for (int i = 0; i < layerCount; i++) {
-            char layer_line[200];
-            snprintf(layer_line, sizeof(layer_line), "    \"%s\"%s\n", 
-                layerDigests[i], (i < layerCount - 1) ? "," : "");
-            strcat(manifest_buffer, layer_line);
+            if (i > 0) strcat(manifest_canonical, ",\n");
+            char layer_entry[256];
+            snprintf(layer_entry, sizeof(layer_entry), "    \"%s\"", layerDigests[i]);
+            strcat(manifest_canonical, layer_entry);
         }
         
-        strcat(manifest_buffer, 
-            "  ],\n"
-            "  \"config\": {\n");
+        strcat(manifest_canonical, "\n  ],\n  \"config\": {\n");
         
-        // Add config
-        char config_line[400];
-        snprintf(config_line, sizeof(config_line),
+        // Add config (Cmd, WorkingDir, Env in fixed order)
+        char cmd_escaped[512];
+        strcpy(cmd_escaped, currentImage.cmd);
+        sprintf(manifest_canonical + strlen(manifest_canonical), 
             "    \"Cmd\": \"%s\",\n"
             "    \"WorkingDir\": \"%s\",\n"
-            "    \"Env\": [\n",
-            currentImage.cmd, currentImage.workingDir);
-        strcat(manifest_buffer, config_line);
+            "    \"Env\": [",
+            cmd_escaped, currentImage.workingDir);
         
-        // Add environment (sorted for determinism)
+        // Add environment variables
         for (int i = 0; i < currentImage.envCount; i++) {
-            char env_line[200];
-            snprintf(env_line, sizeof(env_line), "      \"%s=%s\"%s\n",
-                currentImage.envKeys[i], currentImage.envValues[i],
-                (i < currentImage.envCount - 1) ? "," : "");
-            strcat(manifest_buffer, env_line);
+            if (i > 0) strcat(manifest_canonical, ",");
+            strcat(manifest_canonical, "\n      \"");
+            strcat(manifest_canonical, currentImage.envKeys[i]);
+            strcat(manifest_canonical, "=");
+            strcat(manifest_canonical, currentImage.envValues[i]);
+            strcat(manifest_canonical, "\"");
         }
         
-        strcat(manifest_buffer, "    ]\n  }\n}\n");
+        strcat(manifest_canonical, "\n    ]\n  }\n}\n");
         
-        // Compute digest of manifest (deterministic - no timestamp)
-        char manifest_digest[65];
-        compute_string_sha256(manifest_buffer, manifest_digest);
+        // STEP 2: Compute SHA256 of canonical manifest string (WITHOUT digest value)
+        char computed_digest[65];
+        compute_string_sha256(manifest_canonical, computed_digest);
         
-        // Second pass: Generate final manifest WITH digest
+        // STEP 3: Write final manifest with computed digest (same structure as canonical)
         FILE *manifest_fp = fopen(manifestPath, "w");
         if (manifest_fp) {
-            fprintf(manifest_fp, "{\n");
-            fprintf(manifest_fp, "  \"name\": \"%s\",\n", currentImage.name);
-            fprintf(manifest_fp, "  \"tag\": \"%s\",\n", currentImage.tag);
-            fprintf(manifest_fp, "  \"digest\": \"%s\",\n", manifest_digest);
-            fprintf(manifest_fp, "  \"layers\": [\n");
+            fprintf(manifest_fp, 
+                "{\n"
+                "  \"name\": \"%s\",\n"
+                "  \"tag\": \"%s\",\n"
+                "  \"digest\": \"%s\",\n"
+                "  \"layers\": [\n",
+                currentImage.name, currentImage.tag, computed_digest);
+            
+            // Write layers
             for (int i = 0; i < layerCount; i++) {
+                if (i > 0) fprintf(manifest_fp, ",\n");
                 fprintf(manifest_fp, "    \"%s\"", layerDigests[i]);
-                if (i < layerCount - 1) fprintf(manifest_fp, ",");
-                fprintf(manifest_fp, "\n");
             }
-            fprintf(manifest_fp, "  ],\n");
-            fprintf(manifest_fp, "  \"config\": {\n");
-            fprintf(manifest_fp, "    \"Cmd\": \"%s\",\n", currentImage.cmd);
-            fprintf(manifest_fp, "    \"WorkingDir\": \"%s\",\n", currentImage.workingDir);
-            fprintf(manifest_fp, "    \"Env\": [\n");
+            
+            fprintf(manifest_fp,
+                "\n  ],\n"
+                "  \"config\": {\n"
+                "    \"Cmd\": \"%s\",\n"
+                "    \"WorkingDir\": \"%s\",\n"
+                "    \"Env\": [",
+                currentImage.cmd, currentImage.workingDir);
+            
+            // Write environment
             for (int i = 0; i < currentImage.envCount; i++) {
-                fprintf(manifest_fp, "      \"%s=%s\"", currentImage.envKeys[i], currentImage.envValues[i]);
-                if (i < currentImage.envCount - 1) fprintf(manifest_fp, ",");
-                fprintf(manifest_fp, "\n");
+                if (i > 0) fprintf(manifest_fp, ",");
+                fprintf(manifest_fp, "\n      \"%s=%s\"", currentImage.envKeys[i], currentImage.envValues[i]);
             }
-            fprintf(manifest_fp, "    ]\n");
-            fprintf(manifest_fp, "  }\n");
-            fprintf(manifest_fp, "}\n");
+            
+            fprintf(manifest_fp, "\n    ]\n  }\n}\n");
             fclose(manifest_fp);
-            printf("Manifest saved (digest: %.12s)\n", manifest_digest);
+            
+            printf("✅ Manifest saved\n");
+            printf("   digest: %s\n", computed_digest);
         }
 
         fclose(fp);
