@@ -820,13 +820,65 @@ int main(int argc, char *argv[]) {
             printf("No images found\n");
             return 0;
         }
-        printf("NAME\\tTAG\\tID\\tCREATED\n");
+        
+        printf("%-15s %-10s %-15s %-20s\n", "NAME", "TAG", "ID", "CREATED");
+        printf("%-15s %-10s %-15s %-20s\n", "----", "---", "--", "-------");
+        
         struct dirent *entry;
         while ((entry = readdir(dir)) != NULL) {
             if (!strstr(entry->d_name, ".json")) continue;
+            
             char name[100], tag[100];
             if (sscanf(entry->d_name, "%[^_]_%[^.]", name, tag) == 2) {
-                printf("%s\\t%s\\t...\\t...\\n", name, tag);
+                // Read manifest to get digest and created timestamp
+                char manifestPath[512];
+                sprintf(manifestPath, "%s/.docksmith/images/%s", imagesDir, entry->d_name);
+                
+                FILE *manifest = fopen(manifestPath, "r");
+                char digest[256] = "N/A";
+                char created[32] = "N/A";
+                
+                if (manifest) {
+                    char line[512];
+                    while (fgets(line, sizeof(line), manifest)) {
+                        // Extract digest from "digest": "sha256:..."
+                        if (strstr(line, "\"digest\"")) {
+                            char *start = strchr(line, '"');
+                            if (start) {
+                                start++;
+                                char *end = strchr(start, '"');
+                                if (end) {
+                                    strncpy(digest, start, end - start);
+                                    digest[end - start] = '\0';
+                                }
+                            }
+                        }
+                        // Extract created from "created": "..."
+                        if (strstr(line, "\"created\"")) {
+                            char *start = strchr(line, '"');
+                            if (start) {
+                                start++;
+                                char *end = strchr(start, '"');
+                                if (end) {
+                                    strncpy(created, start, end - start);
+                                    created[end - start] = '\0';
+                                }
+                            }
+                        }
+                    }
+                    fclose(manifest);
+                }
+                
+                // Extract first 12 chars of digest (skip "sha256:" prefix if present)
+                char shortID[13];
+                char *digestPtr = digest;
+                if (strstr(digest, "sha256:")) {
+                    digestPtr = digest + 7;  // Skip "sha256:"
+                }
+                strncpy(shortID, digestPtr, 12);
+                shortID[12] = '\0';
+                
+                printf("%-15s %-10s %-15s %-20s\n", name, tag, shortID, created);
             }
         }
         closedir(dir);
