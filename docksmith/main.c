@@ -544,7 +544,7 @@ int main(int argc, char *argv[]) {
                 
                 printf("   Creating directories\n");
                 fflush(stdout);
-                system("mkdir -p temp_fs/bin temp_fs/lib temp_fs/lib64 2>&1");
+                system("mkdir -p temp_fs/bin temp_fs/lib temp_fs/lib64 temp_fs/tmp 2>&1");
                 
                 printf("   Copying sh binary\n");
                 fflush(stdout);
