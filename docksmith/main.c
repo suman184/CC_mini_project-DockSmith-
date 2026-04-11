@@ -914,7 +914,7 @@ int main(int argc, char *argv[]) {
             return 0;
         }
         
-        printf("%-15s %-10s %-15s %-20s\n", "NAME", "TAG", "ID", "CREATED");
+        printf("%-15s %-10s %-64s %-20s\n", "NAME", "TAG", "ID", "CREATED");
         printf("%-15s %-10s %-15s %-20s\n", "----", "---", "--", "-------");
         
         struct dirent *entry;
@@ -980,15 +980,15 @@ int main(int argc, char *argv[]) {
                 }
                 
                 // Extract first 12 chars of digest (skip "sha256:" prefix if present)
-                char shortID[13];
+                char shortID[65];
                 char *digestPtr = digest;
                 if (strstr(digest, "sha256:")) {
                     digestPtr = digest + 7;  // Skip "sha256:"
                 }
-                strncpy(shortID, digestPtr, 12);
-                shortID[12] = '\0';
+                strncpy(shortID, digestPtr, 64);
+                shortID[64] = '\0';
                 
-                printf("%-15s %-10s %-15s %-20s\n", name, tag, shortID, created);
+                printf("%-15s %-10s %-64s %-20s\n", name, tag, shortID, created);
             }
         }
         closedir(dir);
