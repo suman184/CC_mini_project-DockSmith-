@@ -166,7 +166,7 @@ int run_in_container(const char *rootfs, char *cmd) {
 // CREATE LAYER
 void create_layer(FileInfo *before, int beforeCount,
                   FileInfo *after, int afterCount,
-                  const char *instruction) {
+                  const char *instruction, int *cache_invalidated) {
 
     FILE *list = fopen("filelist.txt", "w");
 
@@ -212,7 +212,7 @@ void create_layer(FileInfo *before, int beforeCount,
     sprintf(layerPath, "%s/.docksmith/layers/%s.tar", getenv("HOME"), hash);
     
     struct stat st;
-    int cacheHit = (stat(layerPath, &st) == 0);
+    int cacheHit = (stat(layerPath, &st) == 0) && (*cache_invalidated == 0);
 
     if (cacheHit) {
         printf("  [CACHE HIT]\n");
@@ -224,6 +224,7 @@ void create_layer(FileInfo *before, int beforeCount,
         
         stat(layerPath, &st);
         printf("  [CACHE MISS]\n");
+        *cache_invalidated = 1;  // Mark cascade for subsequent steps
     }
 
     // 🔥 STORE METADATA
@@ -497,6 +498,7 @@ int main(int argc, char *argv[]) {
         fclose(count_fp);
         
         int currentStep = 0;
+        int cache_invalidated = 0;  // Track cascade invalidation
 
         while (fgets(line, sizeof(line), fp)) {
             char command[50];
@@ -589,7 +591,7 @@ int main(int argc, char *argv[]) {
 
                 take_snapshot(TEMP_FS, after, &afterCount);
 
-                create_layer(before, beforeCount, after, afterCount, "COPY");
+                create_layer(before, beforeCount, after, afterCount, "COPY", &cache_invalidated);
             }
 
             // RUN
@@ -614,7 +616,7 @@ int main(int argc, char *argv[]) {
 
                 take_snapshot(TEMP_FS, after, &afterCount);
 
-                create_layer(before, beforeCount, after, afterCount, "RUN");
+                create_layer(before, beforeCount, after, afterCount, "RUN", &cache_invalidated);
             }
 
             // WORKDIR
