@@ -1,5 +1,56 @@
 # Docksmith - Quick Start Guide
 
+## Python-First Workflow (Official)
+
+Use this workflow for day-to-day development and demo prep.
+
+### 1) One-time setup
+
+```bash
+mkdir -p ~/.docksmith/images ~/.docksmith/layers ~/.docksmith/cache
+cat > ~/.docksmith/images/base.json << 'EOF'
+{
+  "name": "base",
+  "version": "1.0"
+}
+EOF
+```
+
+### 2) Build
+
+```bash
+# from repository root
+python docksmith/docksmith_py.py build -t myapp:latest docksmith
+```
+
+### 3) Rebuild to verify cache hit behavior
+
+```bash
+python docksmith/docksmith_py.py build -t myapp:latest docksmith
+```
+
+Expected: layer-producing steps (`COPY` / `RUN`) report `[CACHE HIT]` on warm builds when inputs are unchanged.
+
+### 4) List and remove images
+
+```bash
+python docksmith/docksmith_py.py images
+python docksmith/docksmith_py.py rmi myapp:latest
+```
+
+### 5) Assignment-aligned checks from DOCKSMITH.pdf
+
+- Build once: all layer-producing steps should be `[CACHE MISS]`.
+- Build again with no changes: all layer-producing steps should be `[CACHE HIT]`.
+- Edit a copied file and rebuild: impacted step and downstream steps should become misses.
+- Verify `images` output columns: name, tag, digest prefix, created.
+- Verify `rmi` removes manifest and referenced layer files.
+
+### Notes
+
+- The C binary path is legacy and can diverge from Python manifests.
+- For Linux-only isolation runtime (`docksmith run`) expectations in the PDF, keep C code as reference or implement runtime parity in Python.
+
 Get Docksmith up and running in 5 minutes.
 
 ---

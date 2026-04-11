@@ -1,3 +1,24 @@
+# Docksmith - Python-First Build System
+
+## Important (April 2026)
+
+The official implementation path for this repository is now the Python CLI in `docksmith/cli.py`.
+
+- Use `python docksmith/docksmith_py.py ...` for all build/image commands.
+- `docksmith/main.c` is retained as a legacy systems-learning implementation and is not the default path.
+- This change avoids mixed manifest formats and keeps behavior consistent on Windows development setups.
+
+## Quick Run
+
+```bash
+# from repository root
+python docksmith/docksmith_py.py build -t myapp:latest docksmith
+python docksmith/docksmith_py.py images
+python docksmith/docksmith_py.py rmi myapp:latest
+```
+
+For full setup and assignment-aligned test flow, see `QUICKSTART.md`.
+
 # Docksmith - Docker-Like System in C
 
 A lightweight Docker-like containerization system built from scratch in C to understand how Docker works internally.
