@@ -184,15 +184,15 @@ void create_layer(FileInfo *before, int beforeCount,
 
     fclose(list);
 
-    // 🔴 Skip empty layers
-    if (changedCount == 0) {
-        printf("📦 No filesystem changes → skipping layer\n");
-        system("rm -f filelist.txt");
-        return;
-    }
-
+    // Always create a layer (even if empty)
     // deterministic tar (use gtar on macOS, tar on Linux)
-    system("tar --sort=name --mtime='UTC 1970-01-01' -cf layer.tar -C temp_fs -T filelist.txt 2>/dev/null || gtar --sort=name --mtime='UTC 1970-01-01' -cf layer.tar -C temp_fs -T filelist.txt");
+    if (changedCount == 0) {
+        // Create empty tar file
+        system("tar --sort=name --mtime='UTC 1970-01-01' -cf layer.tar --files-from /dev/null 2>/dev/null || gtar --sort=name --mtime='UTC 1970-01-01' -cf layer.tar --files-from /dev/null");
+    } else {
+        // Create tar with changed files
+        system("tar --sort=name --mtime='UTC 1970-01-01' -cf layer.tar -C temp_fs -T filelist.txt 2>/dev/null || gtar --sort=name --mtime='UTC 1970-01-01' -cf layer.tar -C temp_fs -T filelist.txt");
+    }
 
     // hash (use sha256sum on Linux, shasum on macOS)
     system("sha256sum layer.tar > hash.txt 2>/dev/null || shasum -a 256 layer.tar > hash.txt");
