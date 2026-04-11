@@ -229,21 +229,18 @@ void create_layer(FileInfo *before, int beforeCount,
     fscanf(h, "%s", tar_hash);
     fclose(h);
 
-    // Build comprehensive cache key including instruction, WORKDIR, and ENV
+    // Build cache key: combine tar contents hash with instruction text
+    // This ensures changing RUN instruction invalidates cache
     char cache_key[2048];
-    snprintf(cache_key, sizeof(cache_key), "%s|%s|%s|", tar_hash, instruction, currentImage.workingDir);
-    
-    // Add sorted environment variables to cache key
-    for (int i = 0; i < currentImage.envCount; i++) {
-        char env_pair[256];
-        snprintf(env_pair, sizeof(env_pair), "%s=%s|", currentImage.envKeys[i], currentImage.envValues[i]);
-        strcat(cache_key, env_pair);
-    }
+    snprintf(cache_key, sizeof(cache_key), "%s|%s", tar_hash, instruction);
     
     // Compute SHA256 of combined cache key
-    char combined_cache[2048];
-    snprintf(combined_cache, sizeof(combined_cache), "%s", cache_key);
-    compute_string_sha256(combined_cache, hash);
+    char layer_hash[65];
+    compute_string_sha256(cache_key, layer_hash);
+
+    // Use computed hash as the layer identifier (instead of just tar_hash)
+    char hash[65];
+    strcpy(hash, layer_hash);
 
     // ensure layer directory
     char mkdirCmd[300];
