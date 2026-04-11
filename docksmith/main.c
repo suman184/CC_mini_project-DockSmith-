@@ -527,7 +527,6 @@ int main(int argc, char *argv[]) {
                 printf("✅ Loaded base image: %s\n", imageName);
                 fflush(stdout);
 
-                strcpy(currentImage.name, imageName);
                 strcpy(currentImage.workingDir, "/");
 
                 fclose(img);
