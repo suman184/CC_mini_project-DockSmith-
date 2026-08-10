@@ -1,0 +1,7 @@
+FROM base
+COPY . /app
+WORKDIR /app
+RUN echo "Building application..."
+ENV APP_NAME=Docksmith
+ENV APP_VERSION=1.0
+CMD ["echo", "Docksmith app running successfully!"]

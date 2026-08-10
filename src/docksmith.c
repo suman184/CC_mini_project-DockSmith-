@@ -1,0 +1,1100 @@
+#include <stdio.h>
+#include <string.h>
+#include <stdlib.h>
+#include <sys/stat.h>
+#include <unistd.h>
+#include <dirent.h>
+#include <time.h>
+#include <sys/types.h>
+#include <sys/wait.h>
+#include <sys/types.h>
+#include <sys/wait.h>
+#include <ctype.h>
+
+#define TEMP_FS "./temp_fs"
+
+typedef struct {
+    char name[100];
+    char tag[100];
+    char workingDir[100];
+
+    char envKeys[10][100];
+    char envValues[10][100];
+    int envCount;
+
+    char cmd[200];
+
+} Image;
+
+typedef struct {
+    char path[256];
+    long size;
+    time_t mtime;
+} FileInfo;
+
+// 🔥 Layer metadata storage
+char layerDigests[100][100];
+long layerSizes[100];
+char layerCreatedBy[100][200];
+int layerCount = 0;
+
+// Compute SHA256 of a string
+void compute_string_sha256(const char *input, char *hash_out) {
+    // Write string to temp file
+    FILE *fp = fopen("/tmp/manifest_temp.txt", "w");
+    if (!fp) {
+        strcpy(hash_out, "0000000000000000000000000000000000000000000000000000000000000000");
+        return;
+    }
+    fprintf(fp, "%s", input);
+    fclose(fp);
+    
+    // Compute SHA256 and save to another file
+    system("sha256sum /tmp/manifest_temp.txt > /tmp/manifest_hash.txt 2>/dev/null || shasum -a 256 /tmp/manifest_temp.txt > /tmp/manifest_hash.txt");
+    
+    // Read hash
+    FILE *hf = fopen("/tmp/manifest_hash.txt", "r");
+    if (hf) {
+        char buf[128];
+        fgets(buf, sizeof(buf), hf);
+        sscanf(buf, "%s", hash_out);
+        fclose(hf);
+    }
+    
+    // Cleanup
+    system("rm -f /tmp/manifest_temp.txt /tmp/manifest_hash.txt");
+}
+
+// Image manifest for run command
+typedef struct {
+    char layers[100][100];
+    int layerCount;
+    char cmd[200];
+    char env[10][200];
+    int envCount;
+    char workingDir[100];
+} ImageManifest;
+
+// SNAPSHOT - Skip system directories to avoid huge file lists
+int take_snapshot(const char *base, FileInfo files[], int *count) {
+    DIR *dir = opendir(base);
+    if (!dir) return -1;
+
+    struct dirent *entry;
+    while ((entry = readdir(dir)) != NULL) {
+        if (strcmp(entry->d_name, ".") == 0 || strcmp(entry->d_name, "..") == 0)
+            continue;
+        
+        // Skip system directories to keep snapshot size manageable
+        if (strcmp(entry->d_name, "bin") == 0 || strcmp(entry->d_name, "lib") == 0 ||
+            strcmp(entry->d_name, "lib64") == 0 || strcmp(entry->d_name, "usr") == 0) {
+            continue;
+        }
+
+        // Safety check to prevent array overflow (arrays sized 1000)
+        if (*count >= 999) {
+            fprintf(stderr, "⚠️  Warning: snapshot array full (user files: %d)\n", *count);
+            closedir(dir);
+            return 0;  // Return successfully rather than failing
+        }
+
+        char fullPath[512];
+        sprintf(fullPath, "%s/%s", base, entry->d_name);
+
+        struct stat st;
+        if (stat(fullPath, &st) < 0) continue;
+
+        if (S_ISDIR(st.st_mode)) {
+            take_snapshot(fullPath, files, count);
+        } else {
+            strncpy(files[*count].path, fullPath, 255);
+            files[*count].path[255] = '\0';
+            files[*count].size = st.st_size;
+            files[*count].mtime = st.st_mtime;
+            (*count)++;
+        }
+    }
+
+    closedir(dir);
+    return 0;
+}
+
+// DIFF
+int file_changed(FileInfo *before, int beforeCount, FileInfo *f) {
+    for (int i = 0; i < beforeCount; i++) {
+        if (strcmp(before[i].path, f->path) == 0) {
+            if (before[i].size == f->size &&
+                before[i].mtime == f->mtime)
+                return 0;
+            else
+                return 1;
+        }
+    }
+    return 1;
+}
+
+// ISOLATED CONTAINER EXECUTION WITH CHROOT
+int run_in_container(const char *rootfs, char *cmd) {
+    pid_t pid = fork();
+    
+    if (pid < 0) {
+        perror("❌ fork() failed");
+        return -1;
+    }
+    
+    if (pid == 0) {
+        // CHILD PROCESS
+        char abs_rootfs[512];
+        if (rootfs[0] == '/') {
+            strcpy(abs_rootfs, rootfs);
+        } else {
+            getcwd(abs_rootfs, sizeof(abs_rootfs));
+            strcat(abs_rootfs, "/");
+            strcat(abs_rootfs, rootfs);
+        }
+        
+        if (chdir(abs_rootfs) < 0) {
+            perror("❌ chdir() to rootfs failed");
+            exit(1);
+        }
+        
+        if (chroot(".") < 0) {
+            perror("❌ chroot() failed");
+            exit(1);
+        }
+        
+        if (chdir("/") < 0) {
+            perror("❌ chdir() to / inside container failed");
+            exit(1);
+        }
+        
+        setenv("LD_LIBRARY_PATH", "/lib:/lib64", 1);
+        
+        execl("/bin/sh", "sh", "-c", cmd, NULL);
+        
+        perror("❌ execl() failed");
+        exit(1);
+    } else {
+        // PARENT PROCESS - wait for child
+        int status;
+        waitpid(pid, &status, 0);
+        
+        if (WIFEXITED(status)) {
+            return WEXITSTATUS(status);
+        } else if (WIFSIGNALED(status)) {
+            fprintf(stderr, "❌ Child process terminated by signal %d\n", WTERMSIG(status));
+            return -1;
+        }
+        
+        return -1;
+    }
+}
+
+// CREATE LAYER
+void create_layer(FileInfo *before, int beforeCount,
+                  FileInfo *after, int afterCount,
+                  const char *instruction, const char *workingDir,
+                  const char **envKeys, const char **envValues, int envCount,
+                  const char *prevLayerDigest,
+                  int *cache_invalidated) {
+
+    FILE *list = fopen("filelist.txt", "w");
+
+    int changedCount = 0;
+
+    for (int i = 0; i < afterCount; i++) {
+        if (file_changed(before, beforeCount, &after[i])) {
+            char *relative = strstr(after[i].path, "temp_fs/");
+            if (relative) {
+                fprintf(list, "%s\n", relative + strlen("temp_fs/"));
+                changedCount++;
+            }
+        }
+    }
+
+    fclose(list);
+
+    // Always create a layer (even if empty)
+    // deterministic tar with normalized permissions (use gtar on macOS, tar on Linux)
+    if (changedCount == 0) {
+        // Create empty tar file with normalized permissions
+        system("tar --sort=name --mtime='UTC 1970-01-01' --mode=0755 --owner=0 --group=0 -cf layer.tar --files-from /dev/null 2>/dev/null || gtar --sort=name --mtime='UTC 1970-01-01' --mode=0755 --owner=0 --group=0 -cf layer.tar --files-from /dev/null");
+    } else {
+        // Create tar with changed files and normalized permissions
+        system("tar --sort=name --mtime='UTC 1970-01-01' --mode=0755 --owner=0 --group=0 -cf layer.tar -C temp_fs -T filelist.txt 2>/dev/null || gtar --sort=name --mtime='UTC 1970-01-01' --mode=0755 --owner=0 --group=0 -cf layer.tar -C temp_fs -T filelist.txt");
+    }
+
+    // hash (use sha256sum on Linux, shasum on macOS)
+    system("sha256sum layer.tar > hash.txt 2>/dev/null || shasum -a 256 layer.tar > hash.txt");
+
+    FILE *h = fopen("hash.txt", "r");
+    char tar_hash[100];
+    fscanf(h, "%s", tar_hash);
+    fclose(h);
+
+    // Build COMPLETE cache key per spec:
+    // - previous layer digest (or base)
+    // - instruction text
+    // - WORKDIR value
+    // - sorted ENV variables
+    // - tar_hash (files changed)
+    char cache_key[4096];
+    snprintf(cache_key, sizeof(cache_key), "%s|%s|%s",
+        prevLayerDigest ? prevLayerDigest : "base",
+        instruction,
+        workingDir);
+    
+    // Add sorted ENV variables
+    for (int i = 0; i < envCount; i++) {
+        char env_entry[256];
+        snprintf(env_entry, sizeof(env_entry), "|%s=%s", envKeys[i], envValues[i]);
+        strcat(cache_key, env_entry);
+    }
+    
+    // Add tar contents hash
+    char final_key[4096];
+    snprintf(final_key, sizeof(final_key), "%s|%s", cache_key, tar_hash);
+    
+    // Compute SHA256 of complete cache key
+    char layer_hash[65];
+    compute_string_sha256(final_key, layer_hash);
+
+    // Use computed hash as the layer identifier
+    char hash[65];
+    strcpy(hash, layer_hash);
+
+    // ensure layer directory
+    char mkdirCmd[300];
+    sprintf(mkdirCmd, "mkdir -p %s/.docksmith/layers", getenv("HOME"));
+    system(mkdirCmd);
+
+    // check if layer already exists (cache hit/miss detection)
+    char layerPath[400];
+    sprintf(layerPath, "%s/.docksmith/layers/%s.tar", getenv("HOME"), hash);
+    
+    struct stat st;
+    int cacheHit = (stat(layerPath, &st) == 0) && (*cache_invalidated == 0);
+
+    if (cacheHit) {
+        printf("  [CACHE HIT]\n");
+    } else {
+        // move tar
+        char moveCmd[400];
+        sprintf(moveCmd, "mv layer.tar %s/.docksmith/layers/%s.tar", getenv("HOME"), hash);
+        system(moveCmd);
+        
+        stat(layerPath, &st);
+        printf("  [CACHE MISS]\n");
+        *cache_invalidated = 1;  // Mark cascade for subsequent steps
+    }
+
+    // 🔥 STORE METADATA
+    strcpy(layerDigests[layerCount], hash);
+    layerSizes[layerCount] = st.st_size;
+    strcpy(layerCreatedBy[layerCount], instruction);
+    layerCount++;
+
+    printf("📦 Layer: sha256:%s\n", hash);
+
+    system("rm -f filelist.txt hash.txt layer.tar");
+}
+
+// Container execution with working directory support
+int run_container_with_workdir(const char *rootfs, const char *cmd, const char *workingDir) {
+    pid_t pid = fork();
+    
+    if (pid < 0) {
+        perror("❌ fork() failed");
+        return -1;
+    }
+    
+    if (pid == 0) {
+        // CHILD PROCESS
+        char abs_rootfs[512];
+        if (rootfs[0] == '/') {
+            strcpy(abs_rootfs, rootfs);
+        } else {
+            getcwd(abs_rootfs, sizeof(abs_rootfs));
+            strcat(abs_rootfs, "/");
+            strcat(abs_rootfs, rootfs);
+        }
+        
+        if (chdir(abs_rootfs) < 0) {
+            perror("❌ chdir() to rootfs failed");
+            exit(1);
+        }
+        
+        if (chroot(".") < 0) {
+            perror("❌ chroot() failed");
+            exit(1);
+        }
+        
+        // Change to working directory inside container
+        if (workingDir && workingDir[0] != '\0') {
+            if (chdir(workingDir) < 0) {
+                perror("❌ chdir() to working directory failed");
+                exit(1);
+            }
+        } else {
+            if (chdir("/") < 0) {
+                perror("❌ chdir() to / failed");
+                exit(1);
+            }
+        }
+        
+        setenv("LD_LIBRARY_PATH", "/lib:/lib64", 1);
+        
+        execl("/bin/sh", "sh", "-c", cmd, NULL);
+        
+        perror("❌ execl() failed");
+        exit(1);
+    } else {
+        // PARENT PROCESS
+        int status;
+        waitpid(pid, &status, 0);
+        
+        if (WIFEXITED(status)) {
+            return WEXITSTATUS(status);
+        } else if (WIFSIGNALED(status)) {
+            fprintf(stderr, "❌ Child process terminated by signal %d\n", WTERMSIG(status));
+            return -1;
+        }
+        
+        return -1;
+    }
+}
+
+// Load image manifest for run command
+int load_manifest(const char *imageName, ImageManifest *manifest) {
+    char path[512];
+    sprintf(path, "%s/.docksmith/images/%s.json", getenv("HOME"), imageName);
+    
+    FILE *fp = fopen(path, "r");
+    if (!fp) {
+        printf("❌ Image not found: %s\n", imageName);
+        return -1;
+    }
+    
+    // Initialize manifest
+    manifest->layerCount = 0;
+    manifest->envCount = 0;
+    strcpy(manifest->workingDir, "/");
+    strcpy(manifest->cmd, "");
+    
+    // Simple JSON parsing - scan for key-value pairs
+    char line[512];
+    while (fgets(line, sizeof(line), fp)) {
+        // Parse layers
+        if (strstr(line, "\"layers\"")) {
+            while (fgets(line, sizeof(line), fp)) {
+                if (strchr(line, ']')) break;  // End of layers array
+                if (strstr(line, "\"")) {
+                    char *start = strchr(line, '"');
+                    if (start) {
+                        start++;
+                        char *end = strchr(start, '"');
+                        if (end && start != end) {
+                            int len = end - start;
+                            // Only accept valid hex strings (SHA256 = 64 chars)
+                            if (len == 64) {
+                                int valid = 1;
+                                for (int j = 0; j < len; j++) {
+                                    if (!isxdigit(start[j])) {
+                                        valid = 0;
+                                        break;
+                                    }
+                                }
+                                if (valid && manifest->layerCount < 100) {
+                                    strncpy(manifest->layers[manifest->layerCount], start, len);
+                                    manifest->layers[manifest->layerCount][len] = '\0';
+                                    manifest->layerCount++;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        
+        // Parse Cmd
+        if (strstr(line, "\"Cmd\"")) {
+            char *start = strchr(line, ':');
+            if (start) {
+                start = strchr(start, '"');
+                if (start) {
+                    start++;
+                    char *end = strchr(start, '"');
+                    if (end) {
+                        strncpy(manifest->cmd, start, end - start);
+                        manifest->cmd[end - start] = '\0';
+                    }
+                }
+            }
+        }
+        
+        // Parse WorkingDir
+        if (strstr(line, "\"WorkingDir\"")) {
+            char *start = strchr(line, ':');
+            if (start) {
+                start = strchr(start, '"');
+                if (start) {
+                    start++;
+                    char *end = strchr(start, '"');
+                    if (end) {
+                        strncpy(manifest->workingDir, start, end - start);
+                        manifest->workingDir[end - start] = '\0';
+                    }
+                }
+            }
+        }
+        
+        // Parse Env array
+        if (strstr(line, "\"Env\"")) {
+            while (fgets(line, sizeof(line), fp)) {
+                if (strchr(line, ']')) break;
+                if (strstr(line, "\"")) {
+                    char *start = strchr(line, '"');
+                    if (start) {
+                        start++;
+                        char *end = strchr(start, '"');
+                        if (end && manifest->envCount < 10) {
+                            strncpy(manifest->env[manifest->envCount], start, end - start);
+                            manifest->env[manifest->envCount][end - start] = '\0';
+                            manifest->envCount++;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    
+    fclose(fp);
+    printf("✅ Manifest loaded: %d layers, %d env vars\n", manifest->layerCount, manifest->envCount);
+    return 0;
+}
+
+// Extract layers into runtime filesystem
+int extract_layers(ImageManifest *manifest) {
+    printf("📦 Extracting %d layers...\n", manifest->layerCount);
+    
+    for (int i = 0; i < manifest->layerCount; i++) {
+        char tarPath[512];
+        sprintf(tarPath, "%s/.docksmith/layers/%s.tar", getenv("HOME"), manifest->layers[i]);
+        
+        char cmd[1024];
+        sprintf(cmd, "tar -xf %s -C runtime_fs/ 2>&1", tarPath);
+        
+        printf("  Layer %d: %s\n", i + 1, manifest->layers[i]);
+        int ret = system(cmd);
+        if (ret != 0) {
+            printf("❌ Failed to extract layer: %s\n", manifest->layers[i]);
+            return -1;
+        }
+    }
+    
+    printf("✅ All layers extracted\n");
+    
+    // Ensure runtime_fs has shell and libraries for execution
+    system("mkdir -p runtime_fs/bin runtime_fs/lib runtime_fs/lib64 2>&1");
+    system("cp -L /bin/sh runtime_fs/bin/ 2>&1");
+    system("cp -L /lib/aarch64-linux-gnu/*.so* runtime_fs/lib/ 2>/dev/null || true");
+    system("cp -L /lib64/*.so* runtime_fs/lib64/ 2>/dev/null || true");
+    
+    return 0;
+}
+
+int main(int argc, char *argv[]) {
+    if (argc < 2) {
+        printf("Usage: docksmith build -t <name:tag> <context>\n");
+        printf("       docksmith run <name:tag> [cmd] [-e KEY=VALUE]\n");
+        printf("       docksmith images\n");
+        printf("       docksmith rmi <name:tag>\n");
+        return 1;
+    }
+
+    if (strcmp(argv[1], "build") == 0) {
+        if (argc < 5 || strcmp(argv[2], "-t") != 0) {
+            printf("Usage: docksmith build -t <name:tag> <context>\n");
+            return 1;
+        }
+        
+        char *imageRef = argv[3];
+        char *context = argv[4];
+        char imageName[100], imageTag[100];
+        
+        char *colon = strchr(imageRef, ':');
+        if (colon) {
+            strncpy(imageName, imageRef, colon - imageRef);
+            imageName[colon - imageRef] = '\0';
+            strcpy(imageTag, colon + 1);
+        } else {
+            strcpy(imageName, imageRef);
+            strcpy(imageTag, "latest");
+        }
+        
+        printf("Building: %s:%s from %s\n\n", imageName, imageTag, context);
+
+        char docksmithPath[512];
+        sprintf(docksmithPath, "%s/Docksmithfile", context);
+        FILE *fp = fopen(docksmithPath, "r");
+        if (!fp) {
+            printf("Docksmithfile not found: %s\n", docksmithPath);
+            return 1;
+        }
+
+        char line[256];
+        Image currentImage;
+        currentImage.envCount = 0;
+        strcpy(currentImage.name, imageName);
+        strcpy(currentImage.tag, imageTag);
+
+        // Count total steps
+        int totalSteps = 0;
+        FILE *count_fp = fopen(docksmithPath, "r");
+        char count_line[256];
+        while (fgets(count_line, sizeof(count_line), count_fp)) {
+            count_line[strcspn(count_line, "\n")] = 0;
+            if (strlen(count_line) > 0 && count_line[0] != '#') totalSteps++;
+        }
+        fclose(count_fp);
+        
+        int currentStep = 0;
+        int cache_invalidated = 0;  // Track cascade invalidation
+
+        while (fgets(line, sizeof(line), fp)) {
+            char command[50];
+            char args[200];
+
+            line[strcspn(line, "\n")] = 0;
+
+            int count = sscanf(line, "%s %[^\n]", command, args);
+            if (count == 1) args[0] = '\0';
+            
+            if (strlen(line) == 0 || line[0] == '#') continue;
+            
+            currentStep++;
+            printf("Step %d/%d : %s %s\n", currentStep, totalSteps, command, args);
+
+            // FROM
+            if (strcmp(command, "FROM") == 0) {
+                printf("-> Handling FROM\n");
+                fflush(stdout);
+
+                char imageName[100];
+                sscanf(args, "%s", imageName);
+
+                char path[200];
+                sprintf(path, "%s/.docksmith/images/%s.json", getenv("HOME"), imageName);
+
+                FILE *img = fopen(path, "r");
+                if (!img) {
+                    printf("❌ Base image not found: %s\n", imageName);
+                    return 1;
+                }
+
+                printf("✅ Loaded base image: %s\n", imageName);
+                fflush(stdout);
+
+                strcpy(currentImage.workingDir, "/");
+
+                fclose(img);
+
+                printf("   Cleaning up old temp_fs\n");
+                fflush(stdout);
+                system("rm -rf temp_fs 2>&1");
+                
+                printf("   Creating directories\n");
+                fflush(stdout);
+                system("mkdir -p temp_fs/bin temp_fs/lib temp_fs/lib64 temp_fs/tmp 2>&1");
+                
+                printf("   Copying sh binary\n");
+                fflush(stdout);
+                system("cp -L /bin/sh temp_fs/bin/ 2>&1");
+                system("cp -L /bin/busybox temp_fs/bin/ 2>/dev/null && ln -sf busybox temp_fs/bin/cat && ln -sf busybox temp_fs/bin/echo && ln -sf busybox temp_fs/bin/ls 2>/dev/null || true");
+                
+                printf("   Copying libraries (aarch64)\n");
+                fflush(stdout);
+                // Copy all .so* files from aarch64 lib directory (follows symlinks with -L)
+                system("cp -L /lib/aarch64-linux-gnu/*.so* temp_fs/lib/ 2>/dev/null || true");
+                system("cp -L /lib/aarch64-linux-gnu/ld-linux-aarch64.so.1 temp_fs/lib/ 2>/dev/null || true");
+                // Fallback to /lib64 if needed
+                system("mkdir -p temp_fs/lib64 && cp -L /lib64/*.so* temp_fs/lib64/ 2>/dev/null || true");
+                
+                printf("📦 Temp filesystem initialized\n");
+                fflush(stdout);
+            }
+
+            // COPY
+            else if (strcmp(command, "COPY") == 0) {
+                printf("-> Handling COPY\n");
+                fflush(stdout);
+
+                // Use smaller arrays to avoid stack overflow
+                FileInfo before[1000], after[1000];
+                int beforeCount = 0, afterCount = 0;
+
+                take_snapshot(TEMP_FS, before, &beforeCount);
+
+                char src[100], dest[100];
+                sscanf(args, "%s %s", src, dest);
+
+                char fullDest[200];
+                sprintf(fullDest, "%s%s", TEMP_FS, dest);
+
+                char mkdirCmd[300];
+                sprintf(mkdirCmd, "mkdir -p %s", fullDest);
+                system(mkdirCmd);
+
+                char copyCmd[400];
+                sprintf(copyCmd,
+                        "rsync -a --exclude=temp_fs --exclude=docksmith %s/ %s/",
+                        src, fullDest);
+                system(copyCmd);
+
+                take_snapshot(TEMP_FS, after, &afterCount);
+
+                create_layer(before, beforeCount, after, afterCount, "COPY",
+                    currentImage.workingDir,
+                    (const char**)currentImage.envKeys,
+                    (const char**)currentImage.envValues,
+                    currentImage.envCount,
+                    layerCount > 0 ? layerDigests[layerCount-1] : NULL,
+                    &cache_invalidated);
+            }
+
+            // RUN
+            else if (strcmp(command, "RUN") == 0) {
+                printf("-> Handling RUN\n");
+                fflush(stdout);
+
+                // Use smaller arrays
+                FileInfo before[1000], after[1000];
+                int beforeCount = 0, afterCount = 0;
+
+                take_snapshot(TEMP_FS, before, &beforeCount);
+
+                // Execute command in isolated container using chroot
+                int exit_code = run_in_container(TEMP_FS, args);
+                
+                if (exit_code != 0) {
+                    printf("❌ RUN command failed with exit code: %d\n", exit_code);
+                    fclose(fp);
+                    return 1;
+                }
+
+                take_snapshot(TEMP_FS, after, &afterCount);
+
+                create_layer(before, beforeCount, after, afterCount, "RUN",
+                    currentImage.workingDir,
+                    (const char**)currentImage.envKeys,
+                    (const char**)currentImage.envValues,
+                    currentImage.envCount,
+                    layerCount > 0 ? layerDigests[layerCount-1] : NULL,
+                    &cache_invalidated);
+            }
+
+            // WORKDIR
+            else if (strcmp(command, "WORKDIR") == 0) {
+                printf("-> Handling WORKDIR\n");
+                strcpy(currentImage.workingDir, args);
+                printf("✅ WorkingDir set to: %s\n", currentImage.workingDir);
+            }
+
+            // ENV
+            else if (strcmp(command, "ENV") == 0) {
+                printf("-> Handling ENV\n");
+
+                char key[100], value[100];
+                sscanf(args, "%[^=]=%s", key, value);
+
+                strcpy(currentImage.envKeys[currentImage.envCount], key);
+                strcpy(currentImage.envValues[currentImage.envCount], value);
+
+                currentImage.envCount++;
+
+                printf("✅ ENV added: %s=%s\n", key, value);
+            }
+
+            // CMD
+            else if (strcmp(command, "CMD") == 0) {
+                printf("-> Handling CMD\n");
+
+                char temp[200];
+                strcpy(temp, args);
+
+                temp[strlen(temp)-1] = '\0';
+                memmove(temp, temp+1, strlen(temp));
+
+                for (int i = 0; temp[i]; i++) {
+                    if (temp[i] == '"' || temp[i] == ',') temp[i] = ' ';
+                }
+
+                strcpy(currentImage.cmd, temp);
+                printf("✅ CMD set to: %s\n", currentImage.cmd);
+            }
+
+            else {
+                printf("❌ Unknown instruction: %s\n", command);
+                return 1;
+            }
+        }
+
+        // SPEC-COMPLIANT MANIFEST DIGEST GENERATION with created field preservation
+        printf("Saving manifest...\n");
+        char manifestPath[512];
+        sprintf(manifestPath, "%s/.docksmith/images/%s_%s.json", getenv("HOME"), currentImage.name, currentImage.tag);
+        
+        // Try to load existing manifest to preserve "created" timestamp
+        char created_timestamp[64] = "";
+        FILE *old_manifest = fopen(manifestPath, "r");
+        if (old_manifest) {
+            // Extract existing "created" field
+            char line[512];
+            while (fgets(line, sizeof(line), old_manifest)) {
+                if (strstr(line, "created")) {
+                    char *quote1 = strchr(line, '"');
+                    if (quote1) {
+                        quote1++;
+                        char *quote2 = strchr(quote1, '"');
+                        if (quote2) {
+                            strncpy(created_timestamp, quote1, quote2 - quote1);
+                            created_timestamp[quote2 - quote1] = '\0';
+                            break;
+                        }
+                    }
+                }
+            }
+            fclose(old_manifest);
+        }
+        
+        // If no old manifest, create new timestamp
+        if (strlen(created_timestamp) == 0) {
+            time_t now = time(NULL);
+            struct tm *tm_info = localtime(&now);
+            strftime(created_timestamp, sizeof(created_timestamp), "%Y-%m-%dT%H:%M:%S", tm_info);
+        }
+        
+        // STEP 1: Build canonical JSON with digest="" AND created field (deterministic)
+        char manifest_canonical[4096];
+        sprintf(manifest_canonical, 
+            "{\n"
+            "  \"name\": \"%s\",\n"
+            "  \"tag\": \"%s\",\n"
+            "  \"digest\": \"\",\n"
+            "  \"created\": \"%s\",\n"
+            "  \"layers\": [\n",
+            currentImage.name, currentImage.tag, created_timestamp);
+        
+        // Add layers to canonical form
+        for (int i = 0; i < layerCount; i++) {
+            if (i > 0) strcat(manifest_canonical, ",\n");
+            char layer_entry[256];
+            snprintf(layer_entry, sizeof(layer_entry), "    \"%s\"", layerDigests[i]);
+            strcat(manifest_canonical, layer_entry);
+        }
+        
+        strcat(manifest_canonical, "\n  ],\n  \"config\": {\n");
+        
+        // Add config (Cmd, WorkingDir, Env in fixed order)
+        char cmd_escaped[512];
+        strcpy(cmd_escaped, currentImage.cmd);
+        sprintf(manifest_canonical + strlen(manifest_canonical), 
+            "    \"Cmd\": \"%s\",\n"
+            "    \"WorkingDir\": \"%s\",\n"
+            "    \"Env\": [",
+            cmd_escaped, currentImage.workingDir);
+        
+        // Add environment variables
+        for (int i = 0; i < currentImage.envCount; i++) {
+            if (i > 0) strcat(manifest_canonical, ",");
+            strcat(manifest_canonical, "\n      \"");
+            strcat(manifest_canonical, currentImage.envKeys[i]);
+            strcat(manifest_canonical, "=");
+            strcat(manifest_canonical, currentImage.envValues[i]);
+            strcat(manifest_canonical, "\"");
+        }
+        
+        strcat(manifest_canonical, "\n    ]\n  }\n}\n");
+        
+        // STEP 2: Compute SHA256 of canonical manifest string (with created field, without digest value)
+        char computed_digest[65];
+        compute_string_sha256(manifest_canonical, computed_digest);
+        
+        // STEP 3: Write final manifest with computed digest (same structure as canonical)
+        FILE *manifest_fp = fopen(manifestPath, "w");
+        if (manifest_fp) {
+            fprintf(manifest_fp, 
+                "{\n"
+                "  \"name\": \"%s\",\n"
+                "  \"tag\": \"%s\",\n"
+                "  \"digest\": \"%s\",\n"
+                "  \"created\": \"%s\",\n"
+                "  \"layers\": [\n",
+                currentImage.name, currentImage.tag, computed_digest, created_timestamp);
+            
+            // Write layers
+            for (int i = 0; i < layerCount; i++) {
+                if (i > 0) fprintf(manifest_fp, ",\n");
+                fprintf(manifest_fp, "    \"%s\"", layerDigests[i]);
+            }
+            
+            fprintf(manifest_fp,
+                "\n  ],\n"
+                "  \"config\": {\n"
+                "    \"Cmd\": \"%s\",\n"
+                "    \"WorkingDir\": \"%s\",\n"
+                "    \"Env\": [",
+                currentImage.cmd, currentImage.workingDir);
+            
+            // Write environment
+            for (int i = 0; i < currentImage.envCount; i++) {
+                if (i > 0) fprintf(manifest_fp, ",");
+                fprintf(manifest_fp, "\n      \"%s=%s\"", currentImage.envKeys[i], currentImage.envValues[i]);
+            }
+            
+            fprintf(manifest_fp, "\n    ]\n  }\n}\n");
+            fclose(manifest_fp);
+            
+            printf("✅ Manifest saved\n");
+            printf("   digest: %s\n", computed_digest);
+        }
+
+        fclose(fp);
+        printf("\nSuccessfully built %s:%s\n", currentImage.name, currentImage.tag);
+        return 0;
+    }
+
+    // RUN command
+    else if (strcmp(argv[1], "run") == 0) {
+        if (argc < 3) {
+            printf("Usage: docksmith run <name:tag> [cmd] [-e KEY=VALUE]\n");
+            return 1;
+        }
+        
+        char imageName[100], imageTag[100];
+        char *imageRef = argv[2];
+        char *colon = strchr(imageRef, ':');
+        if (colon) {
+            strncpy(imageName, imageRef, colon - imageRef);
+            imageName[colon - imageRef] = '\0';
+            strcpy(imageTag, colon + 1);
+        } else {
+            strcpy(imageName, imageRef);
+            strcpy(imageTag, "latest");
+        }
+        
+        char manifestName[200];
+        sprintf(manifestName, "%s_%s", imageName, imageTag);
+        
+        const char *override_cmd = NULL;
+        int env_count = 0;
+        char env_overrides[10][200];
+        
+        for (int i = 3; i < argc; i++) {
+            if (strcmp(argv[i], "-e") == 0 && i + 1 < argc) {
+                strcpy(env_overrides[env_count++], argv[i + 1]);
+                i++;
+            } else if (override_cmd == NULL) {
+                override_cmd = argv[i];
+            }
+        }
+        
+        printf("🚀 Running container: %s:%s\n", imageName, imageTag);
+        fflush(stdout);
+        
+        // Load image manifest
+        ImageManifest manifest;
+        if (load_manifest(manifestName, &manifest) < 0) {
+            return 1;
+        }
+        
+        printf("✅ Manifest loaded (%d layers)\n", manifest.layerCount);
+        fflush(stdout);
+        
+        // Create runtime filesystem
+        printf("📂 Creating runtime filesystem...\n");
+        fflush(stdout);
+        system("rm -rf runtime_fs 2>&1");
+        system("mkdir -p runtime_fs 2>&1");
+        
+        // Extract layers
+        if (extract_layers(&manifest) < 0) {
+            return 1;
+        }
+        
+        // Apply environment variables
+        printf("🔧 Setting environment variables...\n");
+        for (int i = 0; i < manifest.envCount; i++) {
+            char envCopy[200];
+            strcpy(envCopy, manifest.env[i]);
+            char *eq = strchr(envCopy, '=');
+            if (eq) {
+                *eq = '\0';
+                setenv(envCopy, eq + 1, 1);
+                printf("  %s=%s\n", envCopy, eq + 1);
+            }
+        }
+        
+        // Apply ENV overrides
+        for (int i = 0; i < env_count; i++) {
+            char envCopy[200];
+            strcpy(envCopy, env_overrides[i]);
+            char *eq = strchr(envCopy, '=');
+            if (eq) {
+                *eq = '\0';
+                setenv(envCopy, eq + 1, 1);
+                printf("  %s=%s (override)\n", envCopy, eq + 1);
+            }
+        }
+        
+        // Determine command to run
+        char finalCmd[512];
+        if (override_cmd) {
+            strcpy(finalCmd, override_cmd);
+            printf("📝 Override command: %s\n", finalCmd);
+        } else if (manifest.cmd[0] != '\0') {
+            strcpy(finalCmd, manifest.cmd);
+            printf("📝 Default command: %s\n", finalCmd);
+        } else {
+            printf("❌ No command specified (no CMD in manifest and no override)\n");
+            return 1;
+        }
+        
+        printf("📍 Working dir: %s\n", manifest.workingDir);
+        fflush(stdout);
+        
+        // Execute in container
+        printf("🏃 Executing...\n\n");
+        fflush(stdout);
+        
+        int exit_code = run_container_with_workdir("runtime_fs", finalCmd, manifest.workingDir);
+        
+        printf("\n✅ Container exited with code: %d\n", exit_code);
+        
+        return exit_code;
+    }
+
+    else if (strcmp(argv[1], "images") == 0) {
+        char imagesDir[512];
+        sprintf(imagesDir, "%s/.docksmith/images", getenv("HOME"));
+        DIR *dir = opendir(imagesDir);
+        if (!dir) {
+            printf("No images found\n");
+            return 0;
+        }
+        
+        printf("%-15s %-10s %-64s %-20s\n", "NAME", "TAG", "ID", "CREATED");
+        printf("%-15s %-10s %-15s %-20s\n", "----", "---", "--", "-------");
+        
+        struct dirent *entry;
+        while ((entry = readdir(dir)) != NULL) {
+            if (!strstr(entry->d_name, ".json")) continue;
+            
+            // Parse filename: remove .json extension first
+            char filename[256];
+            strcpy(filename, entry->d_name);
+            char *json_ext = strstr(filename, ".json");
+            if (json_ext) *json_ext = '\0';
+            
+            // Split by underscore: "demoapp_1.0" -> name="demoapp", tag="1.0"
+            char name[100], tag[100];
+            char *underscore = strchr(filename, '_');
+            if (underscore) {
+                strncpy(name, filename, underscore - filename);
+                name[underscore - filename] = '\0';
+                strcpy(tag, underscore + 1);
+                // Read manifest to get digest and created timestamp
+                char manifestPath[512];
+                sprintf(manifestPath, "%s/%s", imagesDir, entry->d_name);
+                
+                FILE *manifest = fopen(manifestPath, "r");
+                char digest[256] = "N/A";
+                char created[32] = "N/A";
+                
+                if (manifest) {
+                    char line[512];
+                    while (fgets(line, sizeof(line), manifest)) {
+                        // Extract digest from "digest": "sha256:..."
+                        if (strstr(line, "digest")) {
+                            char *colon = strchr(line, ':');
+                            if (colon) {
+                                char *quote = strchr(colon, '"');
+                                if (quote) {
+                                    quote++;
+                                    char *end = strchr(quote, '"');
+                                    if (end) {
+                                        strncpy(digest, quote, end - quote);
+                                        digest[end - quote] = '\0';
+                                    }
+                                }
+                            }
+                        }
+                        // Extract created from "created": "..."
+                        if (strstr(line, "created")) {
+                            char *colon = strchr(line, ':');
+                            if (colon) {
+                                char *quote = strchr(colon, '"');
+                                if (quote) {
+                                    quote++;
+                                    char *end = strchr(quote, '"');
+                                    if (end) {
+                                        strncpy(created, quote, end - quote);
+                                        created[end - quote] = '\0';
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    fclose(manifest);
+                }
+                
+                // Extract first 12 chars of digest (skip "sha256:" prefix if present)
+                char shortID[65];
+                char *digestPtr = digest;
+                if (strstr(digest, "sha256:")) {
+                    digestPtr = digest + 7;  // Skip "sha256:"
+                }
+                strncpy(shortID, digestPtr, 64);
+                shortID[64] = '\0';
+                
+                printf("%-15s %-10s %-64s %-20s\n", name, tag, shortID, created);
+            }
+        }
+        closedir(dir);
+        return 0;
+    }
+    
+    else if (strcmp(argv[1], "rmi") == 0) {
+        if (argc < 3) {
+            printf("Usage: docksmith rmi <name:tag>\n");
+            return 1;
+        }
+        char imageName[100], imageTag[100];
+        char *imageRef = argv[2];
+        char *colon = strchr(imageRef, ':');
+        if (colon) {
+            strncpy(imageName, imageRef, colon - imageRef);
+            imageName[colon - imageRef] = '\0';
+            strcpy(imageTag, colon + 1);
+        } else {
+            strcpy(imageName, imageRef);
+            strcpy(imageTag, "latest");
+        }
+        
+        char manifestPath[512];
+        sprintf(manifestPath, "%s/.docksmith/images/%s_%s.json", getenv("HOME"), imageName, imageTag);
+        if (remove(manifestPath) == 0) {
+            printf("Deleted %s:%s\n", imageName, imageTag);
+        } else {
+            printf("Image not found\n");
+            return 1;
+        }
+        return 0;
+    }
+    
+    else {
+        printf("Unknown command: %s\n", argv[1]);
+        printf("Usage: docksmith build -t <name:tag> <context>\n");
+        return 1;
+    }
+}
