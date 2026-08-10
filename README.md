@@ -1,595 +1,387 @@
-# Docksmith - Docker-Like System in C
+# Docksmith
 
-A lightweight Docker-like containerization system built from scratch in C to understand how Docker works internally.
+A miniature Docker, written from scratch in C.
 
-**Status**: Build engine ~70% complete | Process isolation ✅ implemented
+Docksmith builds container images from a `Docksmithfile`, stores them as content-addressed
+layers, caches build steps deterministically, and runs the result as a real isolated process
+using `chroot(2)`. No daemon, no runtime dependencies, no Docker anywhere in the stack — the
+isolation is implemented directly on top of OS primitives.
 
----
+It was built to answer three questions properly rather than take them on faith:
 
-## 🎯 Project Overview
-
-Docksmith is an educational project that builds a simplified container system from scratch, focusing on:
-- **Image building** from Docksmithfiles
-- **Layer system** with content-addressable storage
-- **Process isolation** using chroot
-- **Container runtime** execution
-
-This is NOT a full Docker replacement, but a functional subset demonstrating core containerization concepts.
-
----
-
-## 📋 Table of Contents
-
-- [Architecture](#architecture)
-- [Current Features](#current-features)
-- [Building & Usage](#building--usage)
-- [Project Structure](#project-structure)
-- [Implementation Details](#implementation-details)
-- [Progress Tracker](#progress-tracker)
-- [Next Steps](#next-steps)
+1. **How does build caching actually work?** What exactly goes into a cache key, and why does
+   changing one line of a Dockerfile invalidate everything below it?
+2. **How does process isolation work at the OS level?** What does it really mean for a process
+   to "see a different filesystem"?
+3. **How is an image assembled from layers?** How do a stack of tarballs become a running
+   container?
 
 ---
 
-## 🏗 Architecture
+## Contents
 
-```
-┌─────────────────────────────────────────────────────┐
-│            docksmith build                          │
-│                                                     │
-│  ┌───────────────────────────────────────────────┐ │
-│  │ 1. Parse Docksmithfile (line-by-line)        │ │
-│  └──────────────────┬──────────────────────────┘ │
-│                     ↓                             │
-│  ┌───────────────────────────────────────────────┐ │
-│  │ 2. Dispatcher → Route instruction             │ │
-│  └──────────────────┬──────────────────────────┘ │
-│                     ↓                             │
-│  ┌───────────────────────────────────────────────┐ │
-│  │ 3. Execute: FROM/COPY/RUN/ENV/CMD/WORKDIR   │ │
-│  └──────────────────┬──────────────────────────┘ │
-│                     ↓                             │
-│  ┌───────────────────────────────────────────────┐ │
-│  │ 4. Build Layers (tar + SHA256 hash)          │ │
-│  └──────────────────┬──────────────────────────┘ │
-│                     ↓                             │
-│  ┌───────────────────────────────────────────────┐ │
-│  │ 5. Store Metadata (~/.docksmith/layers/)     │ │
-│  └───────────────────────────────────────────────┘ │
-└─────────────────────────────────────────────────────┘
-
-Process Execution Isolation:
-┌──────────────────────────────────────┐
-│  RUN instruction in Docksmithfile   │
-└────────────────┬─────────────────────┘
-                 ↓
-         ┌──────────────┐
-         │   fork()     │
-         └──────┬───────┘
-                ↓
-    ┌───────────────────────┐
-    │   Child Process       │
-    │ •chdir(temp_fs)       │
-    │ •chroot(".")          │
-    │ •execl(/bin/sh,cmd)   │
-    └───────────────────────┘
-                ↓
-        ✅ Isolated Execution
-```
+- [Quick start](#quick-start)
+- [How it works](#how-it-works)
+  - [The layer store](#the-layer-store)
+  - [The build cache](#the-build-cache)
+  - [Process isolation](#process-isolation)
+- [Docksmithfile reference](#docksmithfile-reference)
+- [CLI reference](#cli-reference)
+- [Demo walkthrough](#demo-walkthrough)
+- [Repository layout](#repository-layout)
+- [Requirements](#requirements)
+- [Known limitations](#known-limitations)
 
 ---
 
-## ✅ Current Features
+## Quick start
 
-### Implemented
-
-| Component | Status | Details |
-|-----------|--------|---------|
-| **CLI** | ✅ Complete | `docksmith build` command entry point |
-| **Parser** | ✅ Complete | Reads Docksmithfile line-by-line |
-| **Dispatcher** | ✅ Complete | Routes instructions to handlers |
-| **FROM** | ✅ Complete | Loads base image from `~/.docksmith/images/` |
-| **WORKDIR** | ✅ Complete | Sets working directory in image struct |
-| **ENV** | ✅ Complete | Stores environment variables (key-value) |
-| **CMD** | ✅ Complete | Stores default container command |
-| **COPY** | ✅ Complete | Copies files to temp_fs |
-| **Layer System** | ✅ Complete | Creates tar archives with SHA256 hashing |
-| **RUN (Isolated)** | ✅ **NEW** | Executes commands using chroot isolation |
-| **Error Handling** | ✅ Complete | Build fails on RUN errors with proper exit codes |
-
-### Partially Implemented
-
-| Component | Status | Notes |
-|-----------|--------|-------|
-| **Temp Filesystem** | 🔄 In Progress | Works as container root, needs /bin/sh copy |
-| **Metadata Storage** | 🔄 In Progress | SHA256 digests stored, manifest creation pending |
-
-### Not Yet Implemented
-
-| Component | Status | Notes |
-|-----------|--------|-------|
-| **docksmith run** | ❌ Future | Container runtime execution |
-| **Build Cache** | ❌ Future | Skip layers if no changes |
-| **Image Manifest** | ❌ Future | Store image metadata |
-| **Multi-stage builds** | ❌ Future | Advanced feature |
-
----
-
-## 🔧 Building & Usage
-
-### Prerequisites (Ubuntu)
-
-- Ubuntu 20.04+ with development tools
-- GCC compiler: `sudo apt-get install build-essential`
-- GNU tar: (included by default)
-- sha256sum: (included by default)
-- rsync: `sudo apt-get install rsync`
-
-### Build Instructions
+> Docksmith needs **Linux** and **root**. `chroot(2)` is a privileged syscall, and it does not
+> exist in a useful form on macOS or Windows. Use a Linux VM (UTM, VirtualBox, VMware, or a
+> cloud box). WSL works but has its own quirks around `/proc` and permissions.
 
 ```bash
-# 1. Run setup
-bash SETUP_UBUNTU.sh
+git clone https://github.com/suman184/CC_mini_project-DockSmith-.git
+cd CC_mini_project-DockSmith-
 
-# 2. Build binary
-cd docksmith
-gcc -o docksmith main.c
+./scripts/setup.sh          # checks tools, creates ~/.docksmith, imports base image, compiles
 
-# 3. Verify
-./docksmith images
+cd examples/demo-app
+sudo ../../docksmith build -t myapp:latest .
+sudo ../../docksmith run myapp:latest
 ```
 
-### Important Setup Before Testing
+`setup.sh` is a one-time step. After it, everything works fully offline — Docksmith never
+touches the network during a build or a run.
 
-Create the base image and required directories:
+---
 
-```bash
-# Create directories
-mkdir -p ~/.docksmith/images ~/.docksmith/layers
+## How it works
 
-# Create minimal base image config
-cat > ~/.docksmith/images/base.json << 'EOF'
+A single binary, no daemon. All state lives on disk under `~/.docksmith/`:
+
+```
+~/.docksmith/
+├── images/     one JSON manifest per image  (myapp_latest.json)
+├── layers/     content-addressed tar files  (<sha256>.tar)
+└── cache/      build cache index
+```
+
+A build walks the `Docksmithfile` top to bottom. `COPY` and `RUN` each produce a **layer**;
+`FROM`, `WORKDIR`, `ENV` and `CMD` only mutate image config.
+
+```mermaid
+flowchart TD
+    A[Parse Docksmithfile] --> B{Instruction}
+    B -->|FROM| C[Load base image, seed build filesystem]
+    B -->|WORKDIR / ENV / CMD| D[Update image config only]
+    B -->|COPY / RUN| E[Snapshot build filesystem]
+    E --> F[Execute step<br/>COPY: copy files · RUN: chroot + exec]
+    F --> G[Snapshot again, diff the two]
+    G --> H[Tar only the changed files → layer]
+    H --> I{Cache key<br/>already on disk?}
+    I -->|yes| J["[CACHE HIT] — reuse stored layer"]
+    I -->|no| K["[CACHE MISS] — store layer, cascade to all steps below"]
+    J --> B
+    K --> B
+    D --> B
+    C --> B
+    B -->|end| L[Write manifest with computed digest]
+```
+
+### The layer store
+
+A layer is a **delta, not a snapshot**. Before each `COPY`/`RUN`, Docksmith walks the build
+filesystem and records every file's path, size and mtime. After the step runs, it walks again
+and diffs. Only files that were added or modified go into the layer.
+
+That delta is written as a tar archive with deterministic flags:
+
+```
+--sort=name --mtime='UTC 1970-01-01' --mode=0755 --owner=0 --group=0
+```
+
+This matters more than it looks. Tar records file order, timestamps, ownership and permissions
+in the archive header — so without normalising all four, the *same* source files would produce
+a *different* tar on every build, the hash would change every time, and the cache would never
+hit. Reproducible builds are a prerequisite for a working cache, not a nice-to-have.
+
+The archive is hashed with SHA-256 and stored at `~/.docksmith/layers/<hash>.tar`. Layers are
+immutable once written, and identical content maps to one file on disk.
+
+An image is then just a JSON manifest listing its layers in order, plus config:
+
+```json
 {
-  "name": "base",
-  "version": "1.0"
+  "name": "myapp",
+  "tag": "latest",
+  "digest": "sha256:a3f9b2c1...",
+  "created": "2026-04-11T10:22:31",
+  "layers": ["4f2a...", "9bd1..."],
+  "config": {
+    "Cmd": "echo Docksmith app running successfully!",
+    "WorkingDir": "/app",
+    "Env": ["APP_NAME=Docksmith", "APP_VERSION=1.0"]
+  }
 }
-EOF
-
-# On macOS: You need to pre-populate temp_fs with shell
-cd docksmith
-rm -rf temp_fs
-mkdir -p temp_fs/bin
-cp /bin/sh temp_fs/bin/
-
-# On Linux: Same setup works, chroot will have full access
 ```
 
-**Expected output** (if Docksmithfile exists):
+The manifest digest is computed on the **canonical form** — the same JSON serialised with
+`"digest": ""` — and only then written back with the digest filled in. So the digest is the hash
+of the image's content, not a hash of a file that contains its own hash.
+
+### The build cache
+
+Before each layer-producing step, a cache key is derived from everything that could change the
+resulting layer:
+
+| Input | Why it's in the key |
+|---|---|
+| Previous layer's digest | A layer is only meaningful on top of a specific parent. Changing the base image or any earlier step must invalidate this one. |
+| Instruction text | `RUN make` and `RUN make test` are different steps. |
+| Current `WORKDIR` | The same `RUN` in a different directory does different work. |
+| Accumulated `ENV`, sorted by key | `ENV DEBUG=1` changes what a build step produces. Sorting makes the key order-independent. |
+| Hash of the step's file content | Editing a source file must invalidate the `COPY` that carries it. |
+
+These are concatenated and hashed. A **cache hit** requires both that the key matches and that
+the layer file is still present on disk — a key pointing at a deleted layer is not a hit.
+
+**Cascade rule:** once any step misses, every step below it is forced to miss too. This falls
+out of the previous-layer digest being part of the key, and it's the reason editing line 3 of a
+Docksmithfile rebuilds lines 3 onward but not lines 1–2.
+
+Every layer-producing step reports its status and the digest it resolved to:
+
 ```
-Build command triggered
--> Handling FROM
-✅ Loaded base image: base
-📦 Temp filesystem initialized
+Step 2/7 : COPY . /app
 -> Handling COPY
+  [CACHE MISS]
+📦 Layer: sha256:4f2a9c1e...
+
+Step 4/7 : RUN echo "Building application..."
 -> Handling RUN
-✅ Layer created: sha256:abc123...
+  [CACHE HIT]
+📦 Layer: sha256:9bd17ef3...
 ```
 
-### Example Docksmithfile
+`--no-cache` is not implemented; see [Known limitations](#known-limitations).
+
+### Process isolation
+
+This is the part that makes it a container and not a build script.
+
+`RUN` does **not** execute on the host. Docksmith forks, and in the child:
+
+```c
+chdir(rootfs);          // move into the assembled image filesystem
+chroot(".");            // make it the process's root — everything above / disappears
+chdir("/");             // or chdir(WorkingDir) at run time
+execl("/bin/sh", "sh", "-c", cmd, NULL);
+```
+
+After `chroot(2)`, the child process's idea of `/` **is** the image filesystem. Paths that
+resolve outside it are unreachable — not hidden, not permission-denied, but genuinely
+unresolvable, because the kernel resolves them against the new root. The parent `waitpid()`s and
+propagates the exit code.
+
+The same primitive backs both `RUN` during a build and `docksmith run`. Skipping isolation during
+the build and only applying it at run time would defeat the point: a build step that writes to
+the host is a build step that can break the host.
+
+You can verify it directly:
+
+```bash
+sudo ./docksmith run myapp:latest "echo proof > /tmp/inside.txt && ls /tmp"
+# inside.txt is listed inside the container
+ls /tmp/inside.txt
+# ls: cannot access '/tmp/inside.txt': No such file or directory
+```
+
+The file was written to `<rootfs>/tmp/inside.txt`. It never existed at `/tmp` on the host.
+
+---
+
+## Docksmithfile reference
+
+Six instructions, matching Docker's semantics for each.
+
+| Instruction | Produces a layer? | Behaviour |
+|---|---|---|
+| `FROM <image>[:<tag>]` | no | Loads a base image from the local store and seeds the build filesystem. Fails with a clear error if the image isn't present. |
+| `COPY <src> <dest>` | **yes** | Copies files from the build context into the image, creating missing directories. |
+| `RUN <command>` | **yes** | Executes a shell command *inside the assembled image filesystem*, isolated via `chroot`. A non-zero exit aborts the build. |
+| `WORKDIR <path>` | no | Sets the working directory for subsequent instructions and for the container at run time. |
+| `ENV <key>=<value>` | no | Stores an environment variable in the image config. Injected into every container started from the image. |
+| `CMD ["exec", "arg"]` | no | Default command when the container starts. JSON array form. |
+
+Anything else fails immediately with the instruction name and line number.
+
+Example — the demo app, which exercises all six:
 
 ```dockerfile
 FROM base
-WORKDIR /app
 COPY . /app
-RUN echo "Building..."
-RUN apt-get install -y vim
-ENV NAME=Zoro
-ENV VERSION=1.0
-CMD ["echo", "Container running"]
-```
-
-### How to Run
-
-```bash
-# 1. Build image with proper naming
-cd demo_app
-../docksmith/docksmith build -t myapp:1.0 .
-
-# 2. List images
-../docksmith/docksmith images
-
-# 3. Run container
-../docksmith/docksmith run myapp:1.0
-
-# 4. Run with ENV override
-../docksmith/docksmith run myapp:1.0 -e APP_NAME=MyAppName
-
-# 5. Delete image
-../docksmith/docksmith rmi myapp:1.0
-```
-
----
-
-## 🧪 Testing the Isolation
-
-### On Linux (Full Support ✅)
-
-The chroot isolation works perfectly on Linux:
-
-```bash
-# Setup base image
-mkdir -p ~/.docksmith/images ~/.docksmith/layers
-cat > ~/.docksmith/images/base.json << 'EOF'
-{"name": "base", "version": "1.0"}
-EOF
-
-# Create test Docksmithfile
-cat > Docksmithfile << 'EOF'
-FROM base
-RUN mkdir -p /app && echo "Container file" > /app/test.txt
-RUN cat /app/test.txt
-EOF
-
-# Build (use sudo -E to preserve environment variables)
-sudo -E ./docksmith build
-
-# Output should show:
-# ✅ Temp filesystem initialized
-# ✅ Layer created: sha256:...
-# Container file
-```
-
-### On macOS (Logic Testing ⚠️)
-
-macOS SIP restricts `chroot()` for security. The isolation logic is implemented correctly, but you can't execute dynamically-linked binaries inside chroot. Here's what works:
-
-**What's been verified:**
-- ✅ fork() creates child process
-- ✅ chdir() works  
-- ✅ chroot() call succeeds
-- ✅ Exit code handling works
-- ❌ execl() can't run binaries inside macOS chroot (SIP limitation)
-
-**To verify isolation on macOS:**
-
-```bash
-# 1. Setup
-mkdir -p ~/.docksmith/images
-cat > ~/.docksmith/images/base.json << 'EOF'
-{"name": "base", "version": "1.0"}
-EOF
-
-# 2. Test layer creation (works on macOS)
-cat > docksmith/Docksmithfile << 'EOF'
-FROM base
-COPY . /app
-ENV TEST=works
 WORKDIR /app
-EOF
-
-# 3. Run the build
-cd docksmith
-./docksmith build
-
-# You'll see:
-# ✅ Loaded base image
-# ✅ Temp filesystem initialized
-# Error on RUN (expected due to macOS SIP), but layers for COPY succeed
-```
-
-**Code is production-ready on Linux** - test there for full functionality.
-
----
-
-## 📂 Project Structure
-
-```
-CC_mini_project-DockSmith-/
-├── README.md                          (this file)
-├── docksmith/
-│   ├── main.c                         (main build engine + chroot isolation)
-│   ├── docksmith                      (compiled binary)
-│   ├── Docksmithfile                  (example build file)
-│   ├── images/
-│   │   └── base.json                  (base image definition)
-│   └── temp_fs/                       (temporary filesystem - build workspace)
-└── temp_fs/                           (symlink or copy of temp filesystem)
-```
-
-**Key directories:**
-- `~/.docksmith/images/` - Stored base images
-- `~/.docksmith/layers/` - Layer tar archives (SHA256 named)
-- `./temp_fs/` - Build workspace (becomes container root)
-
----
-
-## 🔬 Implementation Details
-
-### 1. **Process Isolation with Chroot**
-
-The most recent addition: RUN commands now execute in complete isolation using `chroot()`.
-
-**How it works:**
-
-```c
-int run_in_container(const char *rootfs, char *cmd) {
-    fork();                      // Create child process
-    if (child) {
-        chdir(rootfs);           // Move to temp_fs
-        chroot(".");             // Make temp_fs the new root
-        chdir("/");              // Move to root inside container
-        execl("/bin/sh", "sh", "-c", cmd, NULL);  // Execute command
-    }
-    waitpid();                   // Parent waits for child exit code
-    return child_exit_code;
-}
-```
-
-**Benefits:**
-- ✅ Command cannot access host filesystem
-- ✅ No Docker needed
-- ✅ Works offline
-- ✅ Return codes properly propagated
-- ✅ Build fails if RUN command fails
-
-**Limitations:**
-- Chroot isolation only (not full containerization)
-- No PID/networking namespaces
-- Sufficient for build system
-- **macOS**: System Integrity Protection prevents executing binaries inside chroot (use Linux for testing)
-- **Linux**: Full chroot support, works perfectly
-
-**Platform Support:**
-- 🟢 **Linux**: Fully functional (production-ready)
-- 🟡 **macOS**: Logic implemented, SIP prevents execution (test on Linux)
-- 🔴 **Windows**: Not supported
-
-### 2. **Layer System**
-
-Each instruction (COPY, RUN) that modifies filesystem creates a layer:
-
-```
-Take snapshot (before)
-  ↓
-Execute instruction
-  ↓
-Take snapshot (after)
-  ↓
-Compute diff
-  ↓
-Create tar archive
-  ↓
-SHA256 hash tar
-  ↓
-Store ~/ .docksmith/layers/<hash>.tar
-```
-
-**Layer Metadata Stored:**
-- SHA256 digest
-- Size in bytes
-- Instruction that created it (COPY, RUN, etc.)
-
-### 3. **Image State Management**
-
-```c
-typedef struct {
-    char name[100];
-    char workingDir[100];
-    char envKeys[10][100];
-    char envValues[10][100];
-    int envCount;
-    char cmd[200];
-} Image;
-```
-
-This structure maintains all build metadata throughout the build process.
-
-### 4. **Error Handling**
-
-| Error | Handling |
-|-------|----------|
-| Missing Docksmithfile | Exit with error message |
-| Unknown base image | Exit with error message |
-| chroot() failure | Print error, exit build |
-| RUN command failure | Print exit code, abort build |
-| fork() failure | Return -1, exit build |
-
----
-
-## 📊 Progress Tracker
-
-### Phase 1: Foundation ✅ COMPLETE (55%)
-- ✅ CLI setup
-- ✅ Docksmithfile parsing
-- ✅ Instruction dispatcher
-- ✅ Basic image state management
-- ✅ FROM instruction handler
-- ✅ WORKDIR implementation
-- ✅ ENV implementation
-- ✅ CMD implementation
-
-### Phase 2: Build System ✅ MOSTLY COMPLETE (70%)
-- ✅ COPY with temp_fs
-- ✅ RUN instruction (basic)
-- ✅ Snapshot/diff system
-- ✅ Layer creation with tar
-- ✅ SHA256 hashing
-- ✅ **Process isolation with chroot** (NEW!)
-- ✅ Error handling and exit codes
-- 🔄 Metadata storage (partial)
-
-### Phase 3: Container Runtime ❌ NOT STARTED (0%)
-- ❌ `docksmith run` command
-- ❌ Extract layers into rootfs
-- ❌ Reuse `run_in_container()` for execution
-- ❌ stdin/stdout/stderr handling
-
-### Phase 4: Advanced Features ❌ NOT STARTED (0%)
-- ❌ Build cache
-- ❌ Image manifest (config.json)
-- ❌ Multi-stage builds
-- ❌ Healthchecks
-- ❌ Logging
-
----
-
-### Recent Changes
-
-**Latest Fix (Current Session):**
-- **Implemented process isolation using chroot()**
-  - Replaced unsafe `system("cd temp_fs && cmd")` 
-  - Added `run_in_container()` function
-  - Proper fork + chroot + execl pattern
-  - Error handling with exit codes
-  - Build now fails if RUN returns non-zero
-  - Compiled and verified
-
-**Previous improvements:**
-- Layer system with SHA256 hashing
-- FileInfo snapshot/diff algorithm
-- Deterministic tar creation
-
----
-
-## 🎯 Next Steps
-
-### Immediate (Priority 1)
-1. ✅ ~~Implement RUN isolation~~ DONE
-2. Test RUN with actual commands in temp_fs
-3. Verify /bin/sh exists in temp_fs
-4. Test layer creation and SHA256 generation
-
-### Short Term (Priority 2)
-1. Implement `docksmith run` command
-2. Extract layers back into filesystem
-3. Reuse `run_in_container()` for container execution
-4. Add VOLUME and EXPOSE instructions
-
-### Medium Term (Priority 3)
-1. Build cache system (skip unchanged layers)
-2. Create image manifest (config.json)
-3. Proper image tagging
-4. Multi-tag storage
-
-### Long Term (Priority 4)
-1. Multi-stage builds
-2. Health checks
-3. Logging system
-4. Signal handling
-
----
-
-## 🧠 Key Concepts
-
-### Image vs Container
-- **Image**: Static blueprint (all layers combined)
-- **Container**: Running instance with isolated processes
-
-### Layer System
-- Each instruction creates a layer
-- Layers are immutable tarballs
-- Layers can be reused
-- Final image = all layers stacked
-
-### Isolation
-- **chroot**: Changes root filesystem (what / means)
-- Process sees temp_fs as root
-- Cannot access host filesystem
-- Still shares kernel with host
-
-### Build Flow
-```
-Docksmithfile → Parser → Dispatcher → Handler
-    ↓
-  FROM     COPY     RUN     ENV     CMD     WORKDIR
-    ↓
-Build Layers (tar + SHA256)
-    ↓
-Store in ~/.docksmith/layers/
+RUN echo "Building application..."
+ENV APP_NAME=Docksmith
+ENV APP_VERSION=1.0
+CMD ["echo", "Docksmith app running successfully!"]
 ```
 
 ---
 
-## 📝 Notes & Dependencies
+## CLI reference
 
-### Important
-- **Requires /bin/sh inside temp_fs** for RUN isolation
-- Base image must exist in `~/.docksmith/images/base.json`
-- temp_fs is created/reset with every build
-- Metadata stored in user's home directory (~/.docksmith/)
-- **macOS users**: Chroot has SIP restrictions - implementation is correct but won't execute inside chroot on macOS
-- **Linux users**: Use `sudo -E ./docksmith build` to preserve `$HOME` environment variable (needed to access ~/.docksmith/)
+| Command | Behaviour |
+|---|---|
+| `docksmith build -t <name:tag> <context>` | Parses the `Docksmithfile` in `<context>`, executes each step, writes the manifest. Logs every step with its cache status. |
+| `docksmith run <name:tag> [cmd]` | Assembles the image filesystem, starts the container in the foreground, waits for exit, prints the exit code. `[cmd]` overrides the image `CMD`. |
+| `docksmith run ... -e KEY=VALUE` | Overrides or adds an environment variable. Repeatable. Takes precedence over image `ENV`. |
+| `docksmith images` | Lists images in the local store: name, tag, ID, created. |
+| `docksmith rmi <name:tag>` | Removes an image manifest. |
 
-### Platform-Specific Setup
+**Run builds from inside the context directory.** `COPY` sources and the scratch `temp_fs/`
+directory are resolved relative to the current working directory:
 
-**macOS:**
-- ⚠️ chroot() restricted by System Integrity Protection (SIP)
-- Use for development/understanding only
-- For production testing: Use Linux VM or container
-- `brew install gnu-tar` to get `gtar`
-- Commands: `gtar --sort=name ...` and `shasum`
-
-**Linux:**
-- ✅ Full chroot() support
-- Works for production use
-- `sudo -E ./docksmith build` (use `-E` to preserve environment variables)
-- Use standard `tar` and `sha256sum`
-- Deploy and test here for reliable results
-
-**macOS Specific:**
-- Use `gtar` instead of `tar` for deterministic builds
-- Homebrew: `brew install gnu-tar`
-- Command: `gtar --sort=name ...`
-
-### Linux Equivalent
-- Standard `tar` supports `--sort=name`
-- Use `sha256sum` instead of `shasum`
+```bash
+cd examples/demo-app
+sudo ../../docksmith build -t myapp:latest .
+```
 
 ---
 
-## 🐛 Known Issues
+## Demo walkthrough
 
-1. **macOS chroot() Limitation**: macOS has System Integrity Protection (SIP) that restricts `chroot()` for security. The chroot call succeeds, but `execl()` inside the chroot fails with "No such file or directory" because:
-   - macOS prevents executing dynamically-linked binaries inside chroot
-   - Libraries and dynamic loaders are restricted by SIP
-   - **Solution**: This code works perfectly on Linux (where chroot is fully supported)
-   - **For macOS testing**: See "Testing on macOS" section below
+The eight behaviours this project is meant to demonstrate, in order:
 
-2. **Linux ready**: The implementation is production-ready for Linux systems
+```bash
+cd examples/demo-app
 
-3. **Paths must exist**: COPY destination must be created first
-4. **No symbolic links**: Layer system doesn't preserve symlinks
-5. **Permissions**: File permissions may not transfer correctly
-6. **Large files**: Snapshot system reads all files into memory
-7. **Temp_fs cleanup**: Manual cleanup needed between builds
+# 1. Cold build — every layer step reports [CACHE MISS]
+sudo ../../docksmith build -t myapp:latest .
 
----
+# 2. Warm build — every layer step reports [CACHE HIT], returns near-instantly
+sudo ../../docksmith build -t myapp:latest .
 
-## 📚 References & Learning
+# 3. Cache invalidation — edit a source file, rebuild.
+#    The affected step and everything below it miss; steps above still hit.
+echo "# touched" >> app.sh
+sudo ../../docksmith build -t myapp:latest .
 
-**Key System Calls Used:**
-- `fork()` - Create child process
-- `chroot()` - Change root filesystem
-- `execl()` - Execute program
-- `waitpid()` - Wait for child process
-- `stat()` - Get file metadata
-- `readdir()` - Traverse directories
+# 4. List images
+sudo ../../docksmith images
 
-**Related Docker Concepts:**
-- Layers and layer caching
-- Image digests (SHA256)
-- Namespace isolation
-- Root filesystem (rootfs)
+# 5. Run the container
+sudo ../../docksmith run myapp:latest
 
----
+# 6. Environment override at run time
+sudo ../../docksmith run myapp:latest -e APP_NAME=Overridden
 
-## 📄 License & Attribution
+# 7. Prove isolation — the file must not appear on the host
+sudo ../../docksmith run myapp:latest "echo proof > /tmp/inside.txt && ls -l /tmp"
+ls /tmp/inside.txt     # No such file or directory
 
-CC_mini_project-DockSmith- © 2026  
-Educational project for Semester 6, Cloud Computing course  
-Built to understand containerization fundamentals
+# 8. Remove the image
+sudo ../../docksmith rmi myapp:latest
+```
 
 ---
 
-**Last Updated**: March 29, 2026  
-**Build Engine Progress**: 70% Complete  
-**Latest Feature**: Process Isolation with Chroot ✅
+## Repository layout
+
+```
+.
+├── src/docksmith.c          the entire implementation — CLI, build engine, runtime
+├── scripts/
+│   ├── setup.sh             one-time setup: prerequisites, store, base image, compile
+│   └── base-image.json      base image manifest imported into the local store
+├── examples/demo-app/       sample app exercising all six instructions
+│   ├── Docksmithfile
+│   └── app.sh
+├── docs/DOCKSMITH.pdf       original project specification
+├── Makefile
+└── README.md
+```
+
+---
+
+## Requirements
+
+| | |
+|---|---|
+| OS | Linux (a VM is fine). `chroot(2)` is Linux-only in the form used here. |
+| Privileges | root — `chroot(2)` is privileged |
+| Toolchain | `gcc` |
+| Runtime tools | GNU `tar`, `sha256sum`, `rsync` |
+
+On Debian/Ubuntu:
+
+```bash
+sudo apt-get install build-essential rsync coreutils tar
+```
+
+`scripts/setup.sh` verifies all of these before compiling.
+
+---
+
+## Known limitations
+
+Documented deliberately — these are the gaps between the current implementation and the full
+specification in `docs/DOCKSMITH.pdf`.
+
+**Caching**
+- Layers are named by their **cache key hash** rather than by the hash of the tar's own bytes.
+  The two are conflated, so the store is keyed correctly but is not strictly content-addressed:
+  identical content reached by different build paths produces two files.
+- There is no separate `cache/` index. Cache lookup is "does a file with this name exist",
+  which works but couples the cache to the layer store.
+- The cache key uses the instruction *type* (`"COPY"`, `"RUN"`) rather than the full instruction
+  text. Two different `RUN` commands that touch the same files can therefore collide.
+- `--no-cache` is not implemented.
+
+**Image format**
+- `layers` in the manifest is an array of digest strings, not objects carrying `size` and
+  `createdBy`.
+- `Cmd` is stored as a flattened string rather than a JSON array.
+- `docksmith images` prints the full 64-character digest rather than the 12-character short ID.
+- Build output does not include per-step or total timings.
+
+**Build engine**
+- `ENV` values are recorded in the image config but are not injected into the environment of
+  `RUN` commands during the build.
+- `COPY` copies directories via `rsync`; `*` and `**` glob patterns are not supported.
+- `WORKDIR` sets image config but does not create the directory in the build filesystem if it
+  is missing.
+- Change detection compares file size and mtime, not content — a modification that preserves
+  both would be missed.
+
+**Runtime**
+- `docksmith rmi` removes the image manifest but leaves its layer files on disk.
+- The base image is a stub manifest with no layers. `FROM` seeds the build filesystem by copying
+  `/bin/sh`, `busybox` and shared libraries **from the host** rather than extracting real base
+  image layers. Isolation still holds — the container cannot see the host filesystem — but the
+  image is not self-contained the way a real base image would be.
+- Library paths are hardcoded for `aarch64` (`/lib/aarch64-linux-gnu/`), with a `/lib64`
+  fallback that covers `x86_64`. Other architectures need the paths adjusted in `src/docksmith.c`.
+
+**General**
+- Fixed-size buffers throughout, with limits of 100 layers, 10 environment variables and 1000
+  files per snapshot. Exceeding them is not always handled gracefully.
+
+Out of scope by design, per the specification: networking, image registries, resource limits,
+multi-stage builds, bind mounts, detached containers, and daemon processes.
+
+---
+
+## Credits
+
+Cloud Computing mini-project, PES University.
+
+| Area | |
+|---|---|
+| Build flow & image creation | Suman |
+| Layer system — `COPY`/`RUN`, tar, hashing | Himani |
+| Cache, manifest & CLI | Dhruv |
+| Process isolation & container runtime | Dishan |
+
+Specification: `docs/DOCKSMITH.pdf`.

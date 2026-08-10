@@ -1,0 +1,15 @@
+# Compiled binary
+docksmith
+*.o
+
+# Build engine scratch space (recreated on every build/run)
+temp_fs/
+runtime_fs/
+filelist.txt
+hash.txt
+layer.tar
+
+# OS / editor noise
+.DS_Store
+__pycache__/
+*.pyc

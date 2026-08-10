@@ -1,6 +1,0 @@
-FROM base
-WORKDIR /app
-COPY . /app
-RUN echo "Hello"
-ENV NAME=Zoro
-CMD ["echo", "Done"]
